@@ -254,9 +254,6 @@ static int android_bind(struct usb_composite_dev *cdev)
 	if (!usb_gadget_set_selfpowered(gadget))
 		android_config_driver.bmAttributes |= USB_CONFIG_ATT_SELFPOWER;
 
-	if (gadget->ops->wakeup)
-		android_config_driver.bmAttributes |= USB_CONFIG_ATT_WAKEUP;
-
 	/* register our configuration */
 	ret = usb_add_config(cdev, &android_config_driver);
 	if (ret) {
