@@ -351,4 +351,3 @@ static void __init msm7x2x_init(void)
 msm_add_usb_devices();
 
 }
-
