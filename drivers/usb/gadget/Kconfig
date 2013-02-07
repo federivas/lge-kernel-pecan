@@ -799,7 +799,7 @@ config USB_G_PRINTER
 	  For more information, see Documentation/usb/gadget_printer.txt
 	  which includes sample code for accessing the device file.
 
-config USB_ANDROID
+config USB_G_ANDROID
 	boolean "Android Gadget"
 	depends on SWITCH
 	default y
@@ -808,33 +808,12 @@ config USB_ANDROID
 	  The functions can be configured via a board file and may be
 	  enabled and disabled dynamically.
 
-config USB_ANDROID_ACM
-	boolean "Android gadget ACM serial function"
-	depends on USB_ANDROID
-	default n
-	help
-	  Provides ACM serial function for android gadget driver.
-
-config USB_ANDROID_ADB
-	boolean "Android gadget adb function"
-	depends on USB_ANDROID
-	default y
-	help
-	  Provides adb function for android gadget driver.
-
 config USB_ANDROID_DIAG
 	boolean "USB MSM7K Diag Function"
 	depends on USB_ANDROID
 	default y
 	help
 	  Qualcomm diagnostics interface support.
-
-config USB_ANDROID_MASS_STORAGE
-	boolean "Android gadget mass storage function"
-	depends on USB_ANDROID && SWITCH
-	default y
-	help
-	  Provides USB mass storage function for android gadget driver.
 
 config USB_CSW_HACK
 	boolean "USB Mass storage csw hack Feature"
@@ -843,29 +822,6 @@ config USB_CSW_HACK
 	help
 	 This csw hack feature is for increasing the performance of the mass
 	 storage
-
-config USB_ANDROID_MTP
-	boolean "Android MTP function"
-	depends on USB_ANDROID
-	help
-	  Provides Media Transfer Protocol (MTP) support for android gadget driver.
-
-config USB_ANDROID_RNDIS
-	boolean "Android gadget RNDIS ethernet function"
-	depends on USB_ANDROID
-	default n
-	help
-	  Provides RNDIS ethernet function for android gadget driver.
-
-config USB_ANDROID_RNDIS_WCEIS
-        boolean "Use Windows Internet Sharing Class/SubClass/Protocol"
-        depends on USB_ANDROID_RNDIS
-        help
-         Causes the driver to look like a Windows-compatible Internet
-         Sharing device, so Windows auto-detects it.
-
-         If you enable this option, the device is no longer CDC ethernet
-         compatible.
 
 config USB_ANDROID_RMNET
 	boolean "RmNet function driver"
@@ -912,13 +868,6 @@ config MODEM_SUPPORT
 	  adds CDC descriptors to enumerate the generic serial as MODEM.
 	  adds CDC class requests to configure MODEM line settings.
 	  Say "y" to enable MODEM support in the generic serial driver.
-
-
-config USB_ANDROID_ACCESSORY
-	boolean "Android USB accessory function"
-	depends on USB_ANDROID
-	help
-	  Provides Android USB Accessory support for android gadget driver.
 
 config USB_CDC_COMPOSITE
 	tristate "CDC Composite Device (Ethernet and ACM)"
