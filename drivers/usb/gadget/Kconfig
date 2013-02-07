@@ -844,6 +844,12 @@ config USB_CSW_HACK
 	 This csw hack feature is for increasing the performance of the mass
 	 storage
 
+config USB_ANDROID_MTP
+	boolean "Android MTP function"
+	depends on USB_ANDROID
+	help
+	  Provides Media Transfer Protocol (MTP) support for android gadget driver.
+
 config USB_ANDROID_RNDIS
 	boolean "Android gadget RNDIS ethernet function"
 	depends on USB_ANDROID
