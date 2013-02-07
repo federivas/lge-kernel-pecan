@@ -33,6 +33,10 @@
 #include <linux/usb/ch9.h>
 #include <linux/usb/composite.h>
 #include <linux/usb/gadget.h>
+#if defined(CONFIG_MACH_LGE)
+#include <mach/rpc_hsusb.h>
+#include <mach/board_lge.h>
+#endif
 
 #include "gadget_chips.h"
 
