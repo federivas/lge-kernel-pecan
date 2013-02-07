@@ -36,7 +36,6 @@
 
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
-#include <linux/switch.h>
 
 
 struct usb_configuration;
@@ -129,7 +128,6 @@ struct usb_function {
 	/* private: */
 	/* internals */
 	struct list_head		list;
-        DECLARE_BITMAP(endpoints, 32);
 	struct device			*dev;
 };
 
@@ -345,15 +343,7 @@ struct usb_composite_dev {
 	unsigned			deactivations;
 
 	/* protects at least deactivation count */
-	spinlock_t			lock;	
-	/* switch indicating connected/disconnected state */
-	struct switch_dev		sw_connected;
-	/* switch indicating current configuration */
-	struct switch_dev		sw_config;
-	/* current connected state for sw_connected */
-	bool				connected;
-
-	struct work_struct switch_work;
+	spinlock_t			lock;
 };
 
 extern int usb_string_id(struct usb_composite_dev *c);
