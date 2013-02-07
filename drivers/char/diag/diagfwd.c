@@ -100,7 +100,6 @@ int diag_device_write(void *buf, int proc_num)
 			
 			driver->usb_write_ptr_svc->length = driver->used;
 			driver->usb_write_ptr_svc->buf = buf;
-			err = diag_write(driver->usb_write_ptr_svc);
 		} else if (proc_num == MODEM_DATA) {
 				driver->usb_write_ptr->buf = buf;
 #ifdef DIAG_DEBUG
@@ -112,10 +111,8 @@ int diag_device_write(void *buf, int proc_num)
 					       ADDRESS, buf, driver->
 					       usb_write_ptr->length, 1);
 #endif
-			err = diag_write(driver->usb_write_ptr);
 		} else if (proc_num == QDSP_DATA) {
 			driver->usb_write_ptr_qdsp->buf = buf;
-			err = diag_write(driver->usb_write_ptr_qdsp);
 		}
 		APPEND_DEBUG('k');
 	} else if (driver->logging_mode == MEMORY_DEVICE_MODE) {
@@ -499,7 +496,6 @@ int diagfwd_connect(void)
 	int err;
 
 	printk(KERN_DEBUG "diag: USB connected\n");
-	err = diag_open(driver->poolsize + 3); /* 2 for A9 ; 1 for q6*/
 	if (err)
 		printk(KERN_ERR "diag: USB port open failed");
 	driver->usb_connected = 1;
@@ -513,7 +509,6 @@ int diagfwd_connect(void)
 	driver->usb_read_ptr->buf = driver->usb_buf_out;
 	driver->usb_read_ptr->length = USB_MAX_OUT_BUF;
 	APPEND_DEBUG('a');
-	diag_read(driver->usb_read_ptr);
 	APPEND_DEBUG('b');
 	return 0;
 }
@@ -526,7 +521,6 @@ int diagfwd_disconnect(void)
 	driver->in_busy_qdsp = 1;
 	driver->debug_flag = 1;
 	driver->display_alert = 1;
-	diag_close();
 	/* TBD - notify and flow control SMD */
 	return 0;
 }
@@ -648,7 +642,6 @@ void diag_read_work_fn(struct work_struct *work)
 	driver->usb_read_ptr->buf = driver->usb_buf_out;
 	driver->usb_read_ptr->length = USB_MAX_OUT_BUF;
 	APPEND_DEBUG('e');
-	diag_read(driver->usb_read_ptr);
 	APPEND_DEBUG('f');
 }
 
@@ -717,8 +710,6 @@ void diagfwd_init(void)
 	driver->diag_wq = create_singlethread_workqueue("diag_wq");
 	INIT_WORK(&(driver->diag_read_work), diag_read_work_fn);
 
-	diag_usb_register(&diagfwdops);
-
 	platform_driver_register(&msm_smd_ch1_driver);
 
 	return;
@@ -747,11 +738,8 @@ void diagfwd_exit(void)
 	driver->chqdsp = 0;
 
 	if (driver->usb_connected)
-		diag_close();
 
 	platform_driver_unregister(&msm_smd_ch1_driver);
-
-	diag_usb_unregister();
 
 	kfree(driver->usb_buf_in);
 	kfree(driver->usb_buf_in_qdsp);

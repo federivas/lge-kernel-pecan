@@ -1,7 +1,7 @@
 /*
  * Automatically generated C config: don't edit
  * Linux kernel version: 2.6.32.9
- * Thu Feb  7 21:10:29 2013
+ * Fri Feb  8 01:05:11 2013
  */
 #define AUTOCONF_INCLUDED
 #define CONFIG_VIDEO_V4L1_COMPAT 1
@@ -476,6 +476,7 @@
 #define CONFIG_LOCALVERSION "-PecanCM-cm10.1"
 #define CONFIG_USB_MSM_OTG_72K 1
 #define CONFIG_MEDIA_TUNER_MC44S803 1
+#define CONFIG_DIAG_CHAR 1
 #define CONFIG_SENSOR_GP2AP 1
 #define CONFIG_SCSI_SCAN_ASYNC 1
 #define CONFIG_IP6_NF_MATCH_RT 1
