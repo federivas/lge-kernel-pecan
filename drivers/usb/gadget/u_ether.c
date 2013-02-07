@@ -23,6 +23,7 @@
 /* #define VERBOSE_DEBUG */
 
 #include <linux/kernel.h>
+#include <linux/gfp.h>
 #include <linux/device.h>
 #include <linux/ctype.h>
 #include <linux/etherdevice.h>
@@ -249,6 +250,11 @@ rx_submit(struct eth_dev *dev, struct usb_request *req, gfp_t gfp_flags)
 	 * but on at least one, checksumming fails otherwise.  Note:
 	 * RNDIS headers involve variable numbers of LE32 values.
 	 */
+	/*
+	 * RX: Do not move data by IP_ALIGN:
+	 * if your DMA controller cannot handle it
+	 */
+	if (!gadget_dma32(dev->gadget))
 	skb_reserve(skb, NET_IP_ALIGN);
 
 	req->buf = skb->data;
@@ -282,6 +288,12 @@ static void rx_complete(struct usb_ep *ep, struct usb_request *req)
 	/* normal completion */
 	case 0:
 		skb_put(skb, req->actual);
+		if (gadget_dma32(dev->gadget) && NET_IP_ALIGN) {
+			u8 *data = skb->data;
+			size_t len = skb_headlen(skb);
+			skb_reserve(skb, NET_IP_ALIGN);
+			memmove(skb->data, data, len);
+		}
 
 		if (dev->unwrap) {
 			unsigned long	flags;
@@ -573,6 +585,24 @@ static netdev_tx_t eth_start_xmit(struct sk_buff *skb,
 
 		length = skb->len;
 	}
+
+	/*
+	 * Align data to 32bit if the dma controller requires it
+	 */
+	if (gadget_dma32(dev->gadget)) {
+		unsigned long align = (unsigned long)skb->data & 3;
+		if (WARN_ON(skb_headroom(skb) < align)) {
+			dev_kfree_skb_any(skb);
+			goto drop;
+		} else if (align) {
+			u8 *data = skb->data;
+			size_t len = skb_headlen(skb);
+			skb->data -= align;
+			memmove(skb->data, data, len);
+			skb_set_tail_pointer(skb, len);
+		}
+	}
+
 	req->buf = skb->data;
 	req->context = skb;
 	req->complete = tx_complete;
@@ -703,17 +733,6 @@ static char *host_addr;
 module_param(host_addr, charp, S_IRUGO);
 MODULE_PARM_DESC(host_addr, "Host Ethernet Address");
 
-
-static u8 nibble(unsigned char c)
-{
-	if (isdigit(c))
-		return c - '0';
-	c = toupper(c);
-	if (isxdigit(c))
-		return 10 + c - 'A';
-	return 0;
-}
-
 static int get_ether_addr(const char *str, u8 *dev_addr)
 {
 	if (str) {
@@ -724,8 +743,8 @@ static int get_ether_addr(const char *str, u8 *dev_addr)
 
 			if ((*str == '.') || (*str == ':'))
 				str++;
-			num = nibble(*str++) << 4;
-			num |= (nibble(*str++));
+			num = hex_to_bin(*str++) << 4;
+			num |= hex_to_bin(*str++);
 			dev_addr [i] = num;
 		}
 		if (is_valid_ether_addr(dev_addr))
@@ -827,7 +846,6 @@ int gether_setup_name(struct usb_gadget *g, u8 ethaddr[ETH_ALEN],
 	 *  - iff DATA transfer is active, carrier is "on"
 	 *  - tx queueing enabled if open *and* carrier is "on"
 	 */
-	netif_stop_queue(net);
 	netif_carrier_off(net);
 
 	dev->gadget = g;
@@ -966,7 +984,6 @@ void gether_disconnect(struct gether *link)
 	struct eth_dev		*dev = link->ioport;
 	struct usb_request	*req;
 
-	WARN_ON(!dev);
 	if (!dev)
 		return;
 
@@ -995,8 +1012,6 @@ void gether_disconnect(struct gether *link)
 	link->in = NULL;
 
 	usb_ep_disable(link->out_ep);
-	usb_ep_fifo_flush(link->in_ep);
-	usb_ep_fifo_flush(link->out_ep);
 	spin_lock(&dev->req_lock);
 	while (!list_empty(&dev->rx_reqs)) {
 		req = container_of(dev->rx_reqs.next,
