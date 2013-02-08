@@ -287,28 +287,6 @@ struct platform_device acm_device = {
 };
 #endif
 
-#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_AUTORUN
-/* LGE_CHANGE
- * Add platform data and device for cdrom storage function.
- * It will be used in Autorun feature.
- * 2011-03-02, hyunhui.park@lge.com
- */
-struct usb_cdrom_storage_platform_data cdrom_storage_pdata = {
-	.nluns      = 1,
-	.vendor     = "LGE",
-	.product    = "Android Platform",
-	.release    = 0x0100,
-};
-
-struct platform_device usb_cdrom_storage_device = {
-	.name   = "usb_cdrom_storage",
-	.id = -1,
-	.dev    = {
-		.platform_data = &cdrom_storage_pdata,
-	},
-};
-#endif
-
 struct android_usb_platform_data android_usb_pdata = {
 	.vendor_id  = 0x1004,
 	.product_id = 0x618E,
@@ -319,7 +297,7 @@ struct android_usb_platform_data android_usb_pdata = {
 	.products = usb_products,
 	.num_functions = ARRAY_SIZE(usb_functions_lge_all),
 	.functions = usb_functions_lge_all,
-	.serial_number = "LG_ANDROID_P350_GB_",
+	.serial_number = "LG_ANDROID_P350****",
 };
 
 static int __init board_serialno_setup(char *serialno)

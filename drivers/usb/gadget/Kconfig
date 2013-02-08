@@ -821,6 +821,13 @@ config USB_CDC_COMPOSITE
 	  Say "y" to link the driver statically, or "m" to build a
 	  dynamically linked module.
 
+config LGE_USB_GADGET_DRIVER
+	boolean "Android Gadget for LGE United Driver"
+	depends on USB_GADGET
+	default n
+	help
+	  Provides android gadget codes for LGE United Driver.
+
 # put drivers that need isochronous transfer support (for audio
 # or video class gadget drivers), or specific hardware, here.
 

@@ -66,9 +66,15 @@ MODULE_VERSION("1.0");
 
 static const char longname[] = "Gadget Android";
 
+#ifdef CONFIG_MACH_LGE
 /* Default vendor and product IDs, overridden by userspace */
+#define VENDOR_ID		0x1004
+#define PRODUCT_ID		0x618E
+#else
 #define VENDOR_ID		0x18D1
 #define PRODUCT_ID		0x0001
+#endif
+
 
 struct android_usb_function {
 	char *name;
@@ -539,6 +545,10 @@ static int mass_storage_function_init(struct android_usb_function *f,
 								GFP_KERNEL);
 	if (!config)
 		return -ENOMEM;
+        #ifdef CONFIG_MACH_LGE
+	config->fsg.vendor_name = "LGE";
+	config->fsg.product_name = "Mass storage";
+	#endif
 
 	config->fsg.nluns = 1;
 	config->fsg.luns[0].removable = 1;
