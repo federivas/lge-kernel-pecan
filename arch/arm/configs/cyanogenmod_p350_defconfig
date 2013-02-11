@@ -1,7 +1,7 @@
 #
 # Automatically generated make config: don't edit
 # Linux kernel version: 2.6.32.9
-# Fri Feb  8 02:40:43 2013
+# Mon Feb 11 10:49:07 2013
 #
 CONFIG_ARM=y
 CONFIG_SYS_SUPPORTS_APM_EMULATION=y
@@ -1700,7 +1700,7 @@ CONFIG_USB_ACM=y
 # USB port drivers
 #
 CONFIG_USB_SERIAL=y
-# CONFIG_USB_SERIAL_CONSOLE is not set
+CONFIG_USB_SERIAL_CONSOLE=y
 # CONFIG_USB_EZUSB is not set
 # CONFIG_USB_SERIAL_GENERIC is not set
 # CONFIG_USB_SERIAL_AIRCABLE is not set
@@ -1808,6 +1808,7 @@ CONFIG_USB_GADGET_DUALSPEED=y
 # CONFIG_USB_G_PRINTER is not set
 CONFIG_USB_G_ANDROID=y
 # CONFIG_USB_CDC_COMPOSITE is not set
+# CONFIG_LGE_USB_GADGET_DRIVER is not set
 
 #
 # OTG and related infrastructure

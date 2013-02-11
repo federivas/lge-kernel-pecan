@@ -1,7 +1,7 @@
 /*
  * Automatically generated C config: don't edit
  * Linux kernel version: 2.6.32.9
- * Fri Feb  8 13:37:26 2013
+ * Mon Feb 11 10:49:07 2013
  */
 #define AUTOCONF_INCLUDED
 #define CONFIG_VIDEO_V4L1_COMPAT 1
@@ -405,6 +405,7 @@
 #define CONFIG_NF_NAT_PPTP 1
 #define CONFIG_MSM7X00A_SLEEP_MODE 0
 #define CONFIG_SHMEM 1
+#define CONFIG_USB_SERIAL_CONSOLE 1
 #define CONFIG_INET_XFRM_MODE_TRANSPORT 1
 #define CONFIG_EPOLL 1
 #define CONFIG_CRYPTO_AEAD2 1
