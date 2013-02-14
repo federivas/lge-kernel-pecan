@@ -94,8 +94,10 @@ DECLARE_DELAYED_WORK(sleep_workqueue, bluesleep_sleep_work);
 #define BT_PROTO	0x01
 #define BT_TXDATA	0x02
 #define BT_ASLEEP	0x04
+#if defined (CONFIG_MACH_LGE)
 #ifndef CONFIG_LGE_BRCM_H4_LPM_SUPPORT_PATCH
 #define CONFIG_LGE_BRCM_H4_LPM_SUPPORT_PATCH
+#endif
 #endif
 
 /* global pointer to a single hci device. */
@@ -176,12 +178,6 @@ void bluesleep_sleep_wakeup(void)
 		/*Activating UART */
 		hsuart_power(1);
 	}
-#if defined(CONFIG_LGE_BRCM_H4_LPM_SUPPORT_PATCH)
-	else {
-		/* Just start the timer if not asleep */
-		mod_timer(&tx_timer, jiffies + (TX_TIMER_INTERVAL * HZ));
-	}
-#endif
 }
 
 /**
@@ -226,6 +222,7 @@ static void bluesleep_hostwake_task(unsigned long data)
 #if defined(CONFIG_LGE_BRCM_H4_LPM_SUPPORT_PATCH)
 	bluesleep_sleep_wakeup();
 #else
+
 	if (gpio_get_value(bsi->host_wake))
 		bluesleep_rx_busy();
 	else
@@ -324,7 +321,6 @@ static void bluesleep_tx_timer_expire(unsigned long data)
 		}
 #endif
 	}
-
 #if defined(CONFIG_LGE_BRCM_H4_LPM_SUPPORT_PATCH)
 	/* Make sure the incoming data flag not to be cleard when timer expired */
 #else
@@ -343,8 +339,6 @@ static void bluesleep_tx_timer_expire(unsigned long data)
  */
 static irqreturn_t bluesleep_hostwake_isr(int irq, void *dev_id)
 {
-	gpio_clear_detect_status(bsi->host_wake_irq);
-
 	/* schedule a tasklet to handle the change in the host wake line */
 	tasklet_schedule(&hostwake_task);
 	return IRQ_HANDLED;
@@ -649,7 +643,6 @@ static int __init bluesleep_probe(struct platform_device *pdev)
 	bsi->uport= msm_hs_get_bt_uport(bs_platform_data->bluetooth_port_num);
 #endif
 
-
 	return 0;
 
 free_bt_ext_wake:
@@ -681,7 +674,6 @@ static int bluesleep_remove(struct platform_device *pdev)
 }
 
 static struct platform_driver bluesleep_driver = {
-	.probe = bluesleep_probe,
 	.remove = bluesleep_remove,
 	.driver = {
 		.name = "bluesleep",
@@ -700,7 +692,7 @@ static int __init bluesleep_init(void)
 
 	BT_INFO("MSM Sleep Mode Driver Ver %s", VERSION);
 
-	retval = platform_driver_register(&bluesleep_driver);
+	retval = platform_driver_probe(&bluesleep_driver, bluesleep_probe);
 	if (retval)
 		return retval;
 
