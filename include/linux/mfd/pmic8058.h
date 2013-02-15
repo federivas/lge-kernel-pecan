@@ -1,29 +1,34 @@
 /* Copyright (c) 2009-2011, Code Aurora Forum. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are
- * met:
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above
- *       copyright notice, this list of conditions and the following
- *       disclaimer in the documentation and/or other materials provided
- *       with the distribution.
- *     * Neither the name of Code Aurora Forum, Inc. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, and the entire permission notice in its entirety,
+ *    including the disclaimer of warranties.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. The name of the author may not be used to endorse or promote
+ *    products derived from this software without specific prior
+ *    written permission.
  *
- * THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESS OR IMPLIED
- * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT
- * ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS
- * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
- * BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
- * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
- * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * ALTERNATIVELY, this product may be distributed under the terms of
+ * the GNU General Public License, version 2, in which case the provisions
+ * of the GPL version 2 are required INSTEAD OF the BSD license.
+ *
+ * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED
+ * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE, ALL OF
+ * WHICH ARE HEREBY DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
+ * OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
+ * BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+ * USE OF THIS SOFTWARE, EVEN IF NOT ADVISED OF THE POSSIBILITY OF SUCH
+ * DAMAGE.
  *
  */
 /*
@@ -89,12 +94,14 @@
 #define PM8058_TEMP_ALARM_IRQ(base)	((base) + PM8058_IRQ_BLOCK_BIT(6, 7))
 #define PM8058_OSCHALT_IRQ(base)	((base) + PM8058_IRQ_BLOCK_BIT(4, 6))
 #define PM8058_BATT_ALARM_IRQ(base)	((base) + PM8058_IRQ_BLOCK_BIT(5, 6))
+#define PM8058_RESOUT_IRQ(base)		((base) + PM8058_IRQ_BLOCK_BIT(6, 4))
 
 struct pm8058_chip;
 
 struct pm8058_platform_data {
 	/* This table is only needed for misc interrupts. */
 	int		irq_base;
+	int		irq;
 	int 		(*init)(struct pm8058_chip *pm_chip);
 
 	int		num_subdevs;
@@ -165,6 +172,11 @@ struct pm8058_gpio {
 	int		disable_pin;	/* disable pin and tri-state its pad */
 };
 
+struct pmic8058_charger_data {
+	unsigned int max_source_current;
+	int charger_type;
+};
+
 /* chip revision */
 #define PM_8058_REV_1p0			0xE1
 #define PM_8058_REV_2p0			0xE2
@@ -177,6 +189,20 @@ struct pm8058_gpio {
 #define PM8058_UART_MUX_1		0x20
 #define PM8058_UART_MUX_2		0x40
 #define PM8058_UART_MUX_3		0x60
+
+enum pon_config{
+	DISABLE_HARD_RESET = 0,
+	SHUTDOWN_ON_HARD_RESET,
+	RESTART_ON_HARD_RESET,
+	MAX_PON_CONFIG,
+};
+
+enum pm8058_smpl_delay {
+	PM8058_SMPL_DELAY_0p5,
+	PM8058_SMPL_DELAY_1p0,
+	PM8058_SMPL_DELAY_1p5,
+	PM8058_SMPL_DELAY_2p0,
+};
 
 /* Note -do not call pm8058_read and pm8058_write in an atomic context */
 int pm8058_read(struct pm8058_chip *pm_chip, u16 addr, u8 *values,
@@ -192,6 +218,66 @@ int pm8058_irq_get_rt_status(struct pm8058_chip *pm_chip, int irq);
 
 int pm8058_misc_control(struct pm8058_chip *pm_chip, int mask, int flag);
 
+#ifdef CONFIG_PMIC8058
 int pm8058_reset_pwr_off(int reset);
-
 void pm8058_show_resume_irq(void);
+#else
+static inline int pm8058_reset_pwr_off(int reset) { return 0; }
+static inline void pm8058_show_resume_irq(void)
+{
+}
+#endif
+
+
+int pm8058_hard_reset_config(enum pon_config config);
+
+/**
+ * pm8058_smpl_control - enables/disables SMPL detection
+ * @enable: 0 = shutdown PMIC on power loss, 1 = reset PMIC on power loss
+ *
+ * This function enables or disables the Sudden Momentary Power Loss detection
+ * module.  If SMPL detection is enabled, then when a sufficiently long power
+ * loss event occurs, the PMIC will automatically reset itself.  If SMPL
+ * detection is disabled, then the PMIC will shutdown when power loss occurs.
+ *
+ * RETURNS: an appropriate -ERRNO error value on error, or zero for success.
+ */
+int pm8058_smpl_control(int enable);
+
+/**
+ * pm8058_smpl_set_delay - sets the SMPL detection time delay
+ * @delay: enum value corresponding to delay time
+ *
+ * This function sets the time delay of the SMPL detection module.  If power
+ * is reapplied within this interval, then the PMIC reset automatically.  The
+ * SMPL detection module must be enabled for this delay time to take effect.
+ *
+ * RETURNS: an appropriate -ERRNO error value on error, or zero for success.
+ */
+int pm8058_smpl_set_delay(enum pm8058_smpl_delay delay);
+
+/**
+ * pm8058_watchdog_reset_control - enables/disables watchdog reset detection
+ * @enable: 0 = shutdown when PS_HOLD goes low, 1 = reset when PS_HOLD goes low
+ *
+ * This function enables or disables the PMIC watchdog reset detection feature.
+ * If watchdog reset detection is enabled, then the PMIC will reset itself
+ * when PS_HOLD goes low.  If it is not enabled, then the PMIC will shutdown
+ * when PS_HOLD goes low.
+ *
+ * RETURNS: an appropriate -ERRNO error value on error, or zero for success.
+ */
+int pm8058_watchdog_reset_control(int enable);
+
+/**
+ * pm8058_stay_on - enables stay_on feature
+ *
+ * PMIC stay-on feature allows PMIC to ignore MSM PS_HOLD=low
+ * signal so that some special functions like debugging could be
+ * performed.
+ *
+ * This feature should not be used in any product release.
+ *
+ * RETURNS: an appropriate -ERRNO error value on error, or zero for success.
+ */
+int pm8058_stay_on(void);

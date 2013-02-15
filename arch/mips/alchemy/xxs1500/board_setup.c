@@ -36,15 +36,17 @@
 
 static void xxs1500_reset(char *c)
 {
-	/* Hit BCSR.SYSTEM_CONTROL[SW_RST] */
-	au_writel(0x00000000, 0xAE00001C);
+	/* Jump to the reset vector */
+	__asm__ __volatile__("jr\t%0"::"r"(0xbfc00000));
 }
 
 static void xxs1500_power_off(void)
 {
-	printk(KERN_ALERT "It's now safe to remove power\n");
 	while (1)
-		asm volatile (".set mips3 ; wait ; .set mips1");
+		asm volatile (
+		"	.set	mips32					\n"
+		"	wait						\n"
+		"	.set	mips0					\n");
 }
 
 void __init board_setup(void)

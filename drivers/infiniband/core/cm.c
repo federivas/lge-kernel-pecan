@@ -2409,10 +2409,12 @@ int ib_send_cm_mra(struct ib_cm_id *cm_id,
 		msg_response = CM_MSG_RESPONSE_REP;
 		break;
 	case IB_CM_ESTABLISHED:
-		cm_state = cm_id->state;
-		lap_state = IB_CM_MRA_LAP_SENT;
-		msg_response = CM_MSG_RESPONSE_OTHER;
-		break;
+		if (cm_id->lap_state == IB_CM_LAP_RCVD) {
+			cm_state = cm_id->state;
+			lap_state = IB_CM_MRA_LAP_SENT;
+			msg_response = CM_MSG_RESPONSE_OTHER;
+			break;
+		}
 	default:
 		ret = -EINVAL;
 		goto error1;
@@ -2987,6 +2989,7 @@ static int cm_sidr_req_handler(struct cm_work *work)
 		goto out; /* No match. */
 	}
 	atomic_inc(&cur_cm_id_priv->refcount);
+	atomic_inc(&cm_id_priv->refcount);
 	spin_unlock_irq(&cm.lock);
 
 	cm_id_priv->id.cm_handler = cur_cm_id_priv->id.cm_handler;

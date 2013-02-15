@@ -1,5 +1,4 @@
 /* Copyright (c) 2011, Code Aurora Forum. All rights reserved.
- * Copyright (C) 2011 Sony Ericsson Mobile Communications AB.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -22,8 +21,6 @@
 #include "kgsl_mmu.h"
 #include "kgsl_device.h"
 #include "kgsl_sharedmem.h"
-
-#include "adreno_ringbuffer.h"
 
 static ssize_t
 sysfs_show_ptpool_entries(struct kobject *kobj,
@@ -662,45 +659,68 @@ kgsl_gpummu_unmap(void *mmu_specific_pt,
 	return 0;
 }
 
-#define SUPERPTE_IS_DIRTY(_p) \
-(((_p) & (GSL_PT_SUPER_PTE - 1)) == 0 && \
-GSL_TLBFLUSH_FILTER_ISDIRTY((_p) / GSL_PT_SUPER_PTE))
-
 static int
 kgsl_gpummu_map(void *mmu_specific_pt,
 		struct kgsl_memdesc *memdesc,
 		unsigned int protflags)
 {
-	unsigned int pte;
+	int numpages;
+	unsigned int pte, ptefirst, ptelast, physaddr;
+	int flushtlb;
+	unsigned int offset = 0;
 	struct kgsl_gpummu_pt *gpummu_pt = mmu_specific_pt;
-	struct scatterlist *s;
-	int flushtlb = 0;
-	int i;
 
-	pte = kgsl_pt_entry_get(KGSL_PAGETABLE_BASE, memdesc->gpuaddr);
-
-	/* Flush the TLB if the first PTE isn't at the superpte boundary */
-	if (pte & (GSL_PT_SUPER_PTE - 1))
-		flushtlb = 1;
-
-	for_each_sg(memdesc->sg, s, memdesc->sglen, i) {
-		unsigned int paddr = sg_phys(s);
-		unsigned int j;
-
-		/* Each sg entry might be multiple pages long */
-		for (j = paddr; j < paddr + s->length; pte++, j += PAGE_SIZE) {
-			if (SUPERPTE_IS_DIRTY(pte))
-				flushtlb = 1;
-			kgsl_pt_map_set(gpummu_pt, pte, j | protflags);
-		}
+	if (!protflags ||
+		protflags & ~(GSL_PT_PAGE_RV | GSL_PT_PAGE_WV)) {
+		KGSL_CORE_ERR("Invalid protflags for "
+			"kgsl_mmu_specific_map: %x", protflags);
+		return -EINVAL;
 	}
 
-	/* Flush the TLB if the last PTE isn't at the superpte boundary */
-	if ((pte + 1) & (GSL_PT_SUPER_PTE - 1))
+	numpages = (memdesc->size >> PAGE_SHIFT);
+
+	ptefirst = kgsl_pt_entry_get(KGSL_PAGETABLE_BASE, memdesc->gpuaddr);
+	ptelast = ptefirst + numpages;
+
+	pte = ptefirst;
+	flushtlb = 0;
+
+	/* tlb needs to be flushed when the first and last pte are not at
+	* superpte boundaries */
+	if ((ptefirst & (GSL_PT_SUPER_PTE - 1)) != 0 ||
+		((ptelast + 1) & (GSL_PT_SUPER_PTE-1)) != 0)
 		flushtlb = 1;
 
+	for (pte = ptefirst; pte < ptelast; pte++, offset += PAGE_SIZE) {
+#ifdef VERBOSE_DEBUG
+		/* check if PTE exists */
+		uint32_t val = kgsl_pt_map_get(gpummu_pt, pte);
+		if (val != 0 && val != GSL_PT_PAGE_DIRTY) {
+			KGSL_CORE_ERR("pt entry %x is already set with "
+			"value %x for pagetable %p\n", pte, val, gpummu_pt);
+			return -EINVAL;
+		}
+#endif
+		if ((pte & (GSL_PT_SUPER_PTE-1)) == 0)
+			if (GSL_TLBFLUSH_FILTER_ISDIRTY(pte / GSL_PT_SUPER_PTE))
+				flushtlb = 1;
+		/* mark pte as in use */
+
+		physaddr = memdesc->ops->physaddr(memdesc, offset);
+		if (!physaddr) {
+			KGSL_CORE_ERR("Failed to convert %x address to "
+			"physical", (unsigned int)memdesc->hostptr + offset);
+			kgsl_gpummu_unmap(mmu_specific_pt, memdesc);
+			return -EFAULT;
+		}
+		kgsl_pt_map_set(gpummu_pt, pte, physaddr | protflags);
+	}
+
+	/* Post all writes to the pagetable */
 	wmb();
 
+	/* Invalidate tlb only if current page table used by GPU is the
+	 * pagetable that we used to allocate */
 	if (flushtlb) {
 		/*set all devices as needing flushing*/
 		gpummu_pt->tlb_flags = UINT_MAX;
@@ -765,4 +785,3 @@ struct kgsl_mmu_pt_ops gpummu_pt_ops = {
 	.mmu_pt_equal = kgsl_gpummu_pt_equal,
 	.mmu_pt_get_flags = kgsl_gpummu_pt_get_flags,
 };
-

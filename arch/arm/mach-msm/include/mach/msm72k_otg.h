@@ -48,15 +48,19 @@
 #define OTGSC_DPIE             (1 << 30)
 #define OTGSC_DPIS             (1 << 22)
 #define OTGSC_HADP             (1 << 6)
+#define OTGSC_IDPU             (1 << 5)
 
 #define ULPI_STP_CTRL   (1 << 30)
 #define ASYNC_INTR_CTRL (1 << 29)
+#define ULPI_SYNC_STATE (1 << 27)
 
 #define PORTSC_PHCD     (1 << 23)
 #define PORTSC_CSC	(1 << 1)
 #define disable_phy_clk() (writel(readl(USB_PORTSC) | PORTSC_PHCD, USB_PORTSC))
 #define enable_phy_clk() (writel(readl(USB_PORTSC) & ~PORTSC_PHCD, USB_PORTSC))
 #define is_phy_clk_disabled() (readl(USB_PORTSC) & PORTSC_PHCD)
+#define is_phy_active()       (readl_relaxed(USB_ULPI_VIEWPORT) &\
+						ULPI_SYNC_STATE)
 #define is_usb_active()       (!(readl(USB_PORTSC) & PORTSC_SUSP))
 
 /* Timeout (in msec) values (min - max) associated with OTG timers */
@@ -138,6 +142,7 @@ struct msm_otg {
 
 	int			irq;
 	int			vbus_on_irq;
+	int			id_irq;
 	void __iomem		*regs;
 	atomic_t		in_lpm;
 	/* charger-type is modified by gadget for legacy chargers
@@ -172,13 +177,6 @@ struct msm_otg {
 	struct timer_list	id_timer;	/* drives id_status polling */
 	unsigned		b_max_power;	/* ACA: max power of accessory*/
 #endif
-#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_GADGET
-	/* LGE_CHANGE
-	 * Cable type about factory cable
-	 * 2011-01-23, hyunhui.park@lge.com
-	 */
-	atomic_t		lgeusb_cable_type;
-#endif
 };
 
 static inline int pclk_requires_voting(struct otg_transceiver *xceiv)
@@ -190,7 +188,10 @@ static inline int pclk_requires_voting(struct otg_transceiver *xceiv)
 
 	dev = container_of(xceiv, struct msm_otg, otg);
 
-	return !dev->pdata->core_clk;
+	if (dev->pdata->pclk_src_name)
+		return 1;
+	else
+		return 0;
 }
 
 static inline int can_phy_power_collapse(struct msm_otg *dev)

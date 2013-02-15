@@ -275,89 +275,6 @@ EXPORT_SYMBOL(__bitmap_weight);
 
 void bitmap_set(unsigned long *map, int start, int nr)
 {
-unsigned long *p = map + BIT_WORD(start);
-const int size = start + nr;
-int bits_to_set = BITS_PER_LONG - (start % BITS_PER_LONG);
-unsigned long mask_to_set = BITMAP_FIRST_WORD_MASK(start);
-
-while (nr - bits_to_set >= 0) {
-*p |= mask_to_set;
-nr -= bits_to_set;
-bits_to_set = BITS_PER_LONG;
-mask_to_set = ~0UL;
-p++;
-}
-if (nr) {
-mask_to_set &= BITMAP_LAST_WORD_MASK(size);
-*p |= mask_to_set;
-}
-}
-EXPORT_SYMBOL(bitmap_set);
-
-void bitmap_clear(unsigned long *map, int start, int nr)
-{
-unsigned long *p = map + BIT_WORD(start);
-const int size = start + nr;
-int bits_to_clear = BITS_PER_LONG - (start % BITS_PER_LONG);
-unsigned long mask_to_clear = BITMAP_FIRST_WORD_MASK(start);
-
-while (nr - bits_to_clear >= 0) {
-*p &= ~mask_to_clear;
-nr -= bits_to_clear;
-bits_to_clear = BITS_PER_LONG;
-mask_to_clear = ~0UL;
-p++;
-}
-if (nr) {
-mask_to_clear &= BITMAP_LAST_WORD_MASK(size);
-*p &= ~mask_to_clear;
-}
-}
-EXPORT_SYMBOL(bitmap_clear);
-
-/**
-* bitmap_find_next_zero_area_off - find a contiguous aligned zero area
-* @map: The address to base the search on
-* @size: The bitmap size in bits
-* @start: The bitnumber to start searching at
-* @nr: The number of zeroed bits we're looking for
-* @align_mask: Alignment mask for zero area
-* @align_offset: Alignment offset for zero area.
-*
-* The @align_mask should be one less than a power of 2; the effect is that
-* the bit offset of all zero areas this function finds plus @align_offset
-* is multiple of that power of 2.
-*/
-unsigned long bitmap_find_next_zero_area_off(unsigned long *map,
-unsigned long size,
-unsigned long start,
-unsigned int nr,
-unsigned long align_mask,
-unsigned long align_offset)
-{
-unsigned long index, end, i;
-again:
-index = find_next_zero_bit(map, size, start);
-
-/* Align allocation */
-index = __ALIGN_MASK(index + align_offset, align_mask) - align_offset;
-
-end = index + nr;
-if (end > size)
-return end;
-i = find_next_bit(map, end, index);
-if (i < end) {
-start = i + 1;
-goto again;
-}
-return index;
-}
-EXPORT_SYMBOL(bitmap_find_next_zero_area_off);
-
-#define BITMAP_FIRST_WORD_MASK(start) (~0UL << ((start) % BITS_PER_LONG))
-
-/*void bitmap_set(unsigned long *map, int start, int nr)
-{
 	unsigned long *p = map + BIT_WORD(start);
 	const int size = start + nr;
 	int bits_to_set = BITS_PER_LONG - (start % BITS_PER_LONG);
@@ -396,32 +313,34 @@ void bitmap_clear(unsigned long *map, int start, int nr)
 		*p &= ~mask_to_clear;
 	}
 }
-EXPORT_SYMBOL(bitmap_clear);*/
+EXPORT_SYMBOL(bitmap_clear);
 
-/*
+/**
  * bitmap_find_next_zero_area - find a contiguous aligned zero area
  * @map: The address to base the search on
  * @size: The bitmap size in bits
  * @start: The bitnumber to start searching at
  * @nr: The number of zeroed bits we're looking for
  * @align_mask: Alignment mask for zero area
+ * @align_offset: Alignment offset for zero area.
  *
  * The @align_mask should be one less than a power of 2; the effect is that
- * the bit offset of all zero areas this function finds is multiples of that
- * power of 2. A @align_mask of 0 means no alignment is required.
+ * the bit offset of all zero areas this function finds plus @align_offset
+ * is multiple of that power of 2.
  */
-/*unsigned long bitmap_find_next_zero_area(unsigned long *map,
-					 unsigned long size,
-					 unsigned long start,
-					 unsigned int nr,
-					 unsigned long align_mask)
+unsigned long bitmap_find_next_zero_area_off(unsigned long *map,
+					     unsigned long size,
+					     unsigned long start,
+					     unsigned int nr,
+					     unsigned long align_mask,
+					     unsigned long align_offset)
 {
 	unsigned long index, end, i;
 again:
 	index = find_next_zero_bit(map, size, start);
 
 	/* Align allocation */
-	/*index = __ALIGN_MASK(index, align_mask);
+	index = __ALIGN_MASK(index + align_offset, align_mask) - align_offset;
 
 	end = index + nr;
 	if (end > size)
@@ -433,7 +352,7 @@ again:
 	}
 	return index;
 }
-EXPORT_SYMBOL(bitmap_find_next_zero_area);*/
+EXPORT_SYMBOL(bitmap_find_next_zero_area_off);
 
 /*
  * Bitmap printing & parsing functions: first version by Bill Irwin,
@@ -442,7 +361,6 @@ EXPORT_SYMBOL(bitmap_find_next_zero_area);*/
 
 #define CHUNKSZ				32
 #define nbits_to_hold_value(val)	fls(val)
-#define unhex(c)			(isdigit(c) ? (c - '0') : (toupper(c) - 'A' + 10))
 #define BASEDEC 10		/* fancier cpuset lists input in decimal */
 
 /**
@@ -549,7 +467,7 @@ int __bitmap_parse(const char *buf, unsigned int buflen,
 			if (chunk & ~((1UL << (CHUNKSZ - 4)) - 1))
 				return -EOVERFLOW;
 
-			chunk = (chunk << 4) | unhex(c);
+			chunk = (chunk << 4) | hex_to_bin(c);
 			ndigits++; totaldigits++;
 		}
 		if (ndigits == 0)

@@ -33,11 +33,13 @@
 #define RESTART_NORMAL 0x0
 #define RESTART_DLOAD  0x1
 
-#if defined(CONFIG_ARCH_MSM8X60)
+#if defined(CONFIG_ARCH_MSM8X60) || defined(CONFIG_ARCH_MSM8960)
 void msm_set_restart_mode(int mode);
 #else
 #define msm_set_restart_mode(mode)
 #endif
+
+extern int pmic_reset_irq;
 
 #endif
 

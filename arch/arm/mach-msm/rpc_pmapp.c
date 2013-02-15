@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2010, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2009-2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -8,11 +8,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
  *
  */
 
@@ -30,6 +25,8 @@
 #define PMAPP_RPC_VER_2_1		0x00020001
 #define PMAPP_RPC_VER_3_1		0x00030001
 #define PMAPP_RPC_VER_5_1		0x00050001
+#define PMAPP_RPC_VER_6_1		0x00060001
+#define PMAPP_RPC_VER_7_1		0x00070001
 
 #define VBUS_SESS_VALID_CB_PROC			1
 #define PM_VOTE_USB_PWR_SEL_SWITCH_APP__HSUSB 	(1 << 2)
@@ -43,6 +40,9 @@
 #define PMAPP_CLOCK_VOTE_PROC			27
 #define PMAPP_SMPS_MODE_VOTE_PROC		28
 #define PMAPP_VREG_PINCNTRL_VOTE_PROC		30
+#define PMAPP_DISP_BACKLIGHT_SET_PROC		31
+#define PMAPP_DISP_BACKLIGHT_INIT_PROC		32
+#define PMAPP_VREG_LPM_PINCNTRL_VOTE_PROC	34
 
 /* Clock voter name max length */
 #define PMAPP_CLOCK_VOTER_ID_LEN		4
@@ -54,6 +54,15 @@ struct rpc_pmapp_ids {
 
 static struct rpc_pmapp_ids rpc_ids;
 static struct msm_rpc_client *client;
+
+/* Add newer versions at the top of array */
+static const unsigned int rpc_vers[] = {
+	PMAPP_RPC_VER_7_1,
+	PMAPP_RPC_VER_6_1,
+	PMAPP_RPC_VER_5_1,
+	PMAPP_RPC_VER_3_1,
+	PMAPP_RPC_VER_2_1,
+};
 
 static void rpc_pmapp_init_rpc_ids(unsigned long vers)
 {
@@ -181,8 +190,7 @@ int msm_pm_app_rpc_init(void (*callback)(int online))
 {
 	uint32_t cb_id, rc;
 
-	if (!machine_is_qsd8x50_ffa() && !machine_is_qsd8x50a_ffa()
-			&& !machine_is_msm7x27_ffa())
+	if (!machine_is_qsd8x50_ffa() && !machine_is_msm7x27_ffa())
 		return -ENOTSUPP;
 
 	client = msm_rpc_register_client("pmapp_usb",
@@ -373,26 +381,31 @@ static int pmapp_rpc_req_reply(struct pmapp_buf *tbuf, struct pmapp_buf *rbuf,
 	int	proc)
 {
 	struct pmapp_ctrl *pm = &pmapp_ctrl;
-	int	ans, len;
+	int	ans, len, i;
 
 
 	if ((pm->endpoint == NULL) || IS_ERR(pm->endpoint)) {
-		pm->endpoint = msm_rpc_connect_compatible(PMAPP_RPC_PROG,
-					PMAPP_RPC_VER_5_1, 0);
-		if (IS_ERR(pm->endpoint)) {
+		for (i = 0; i < ARRAY_SIZE(rpc_vers); i++) {
 			pm->endpoint = msm_rpc_connect_compatible(
-				PMAPP_RPC_PROG, PMAPP_RPC_VER_3_1, 0);
+					PMAPP_RPC_PROG,	rpc_vers[i], 0);
+
+			if (IS_ERR(pm->endpoint)) {
+				ans  = PTR_ERR(pm->endpoint);
+				printk(KERN_ERR "%s: init rpc failed! ans = %d"
+						" for 0x%x version, fallback\n",
+						__func__, ans, rpc_vers[i]);
+			} else {
+				printk(KERN_DEBUG "%s: successfully connected"
+					" to 0x%x rpc version\n",
+					 __func__, rpc_vers[i]);
+				break;
+			}
 		}
-		if (IS_ERR(pm->endpoint)) {
-			pm->endpoint = msm_rpc_connect_compatible(
-				PMAPP_RPC_PROG, PMAPP_RPC_VER_2_1, 0);
-		}
-		if (IS_ERR(pm->endpoint)) {
-			ans  = PTR_ERR(pm->endpoint);
-			printk(KERN_ERR "%s: init rpc failed! ans = %d\n",
-						__func__, ans);
-			return ans;
-		}
+	}
+
+	if (IS_ERR(pm->endpoint)) {
+		ans  = PTR_ERR(pm->endpoint);
+		return ans;
 	}
 
 	/*
@@ -532,3 +545,32 @@ int pmapp_vreg_pincntrl_vote(const char *voter_id, uint vreg_id,
 					PMAPP_VREG_PINCNTRL_VOTE_PROC);
 }
 EXPORT_SYMBOL(pmapp_vreg_pincntrl_vote);
+
+int pmapp_disp_backlight_set_brightness(int value)
+{
+	if (value < 0 || value > 100)
+		return -EINVAL;
+
+	return pmapp_rpc_set_only(value, 0, 0, 0, 1,
+				PMAPP_DISP_BACKLIGHT_SET_PROC);
+}
+EXPORT_SYMBOL(pmapp_disp_backlight_set_brightness);
+
+void pmapp_disp_backlight_init(void)
+{
+	pmapp_rpc_set_only(0, 0, 0, 0, 0, PMAPP_DISP_BACKLIGHT_INIT_PROC);
+}
+EXPORT_SYMBOL(pmapp_disp_backlight_init);
+
+int pmapp_vreg_lpm_pincntrl_vote(const char *voter_id, uint vreg_id,
+						uint clock_id, uint vote)
+{
+	if (strnlen(voter_id, PMAPP_CLOCK_VOTER_ID_LEN)
+			 != PMAPP_CLOCK_VOTER_ID_LEN)
+		return -EINVAL;
+
+	return pmapp_rpc_set_only(*((uint *) voter_id), vreg_id, clock_id,
+					vote, 4,
+					PMAPP_VREG_LPM_PINCNTRL_VOTE_PROC);
+}
+EXPORT_SYMBOL(pmapp_vreg_lpm_pincntrl_vote);

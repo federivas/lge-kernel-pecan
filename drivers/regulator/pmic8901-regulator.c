@@ -8,11 +8,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
  */
 
 #include <linux/err.h>
@@ -144,14 +139,10 @@
 #define VS_PULL_DOWN_ENABLE_MASK	0x20
 #define VS_PULL_DOWN_ENABLE		0x20
 
-/* Max low power mode loads in uA */
-#define LDO_300_LPM_MAX_LOAD		10000
-#define FTSMPS_LPM_MAX_LOAD		100000
-
 struct pm8901_vreg {
 	struct pm8901_vreg_pdata	*pdata;
 	struct regulator_dev		*rdev;
-	int				lpm_max_load;
+	int				hpm_min_load;
 	unsigned			pc_vote;
 	unsigned			optimum;
 	unsigned			mode_initialized;
@@ -195,7 +186,7 @@ struct pm8901_vreg {
 		.test_addr = _test_addr, \
 		.type = REGULATOR_TYPE_LDO, \
 		.is_nmos = _is_nmos, \
-		.lpm_max_load = LDO_300_LPM_MAX_LOAD, \
+		.hpm_min_load = PM8901_VREG_LDO_300_HPM_MIN_LOAD, \
 	}
 
 #define SMPS(_id, _ctrl_addr, _pmr_addr, _pfm_ctrl_addr, _pwr_cnfg_addr) \
@@ -205,7 +196,7 @@ struct pm8901_vreg {
 		.pfm_ctrl_addr = _pfm_ctrl_addr, \
 		.pwr_cnfg_addr = _pwr_cnfg_addr, \
 		.type = REGULATOR_TYPE_SMPS, \
-		.lpm_max_load = FTSMPS_LPM_MAX_LOAD, \
+		.hpm_min_load = PM8901_VREG_FTSMPS_HPM_MIN_LOAD, \
 	}
 
 #define VS(_id, _ctrl_addr, _pmr_addr) \
@@ -492,7 +483,7 @@ static int pm8901_nldo_set_voltage(struct pm8901_chip *chip,
 }
 
 static int pm8901_ldo_set_voltage(struct regulator_dev *dev,
-		int min_uV, int max_uV)
+		int min_uV, int max_uV, unsigned *selector)
 {
 	struct pm8901_vreg *vreg = rdev_get_drvdata(dev);
 	struct pm8901_chip *chip = dev_get_drvdata(dev->dev.parent);
@@ -677,13 +668,13 @@ unsigned int pm8901_vreg_get_optimum_mode(struct regulator_dev *dev,
 		return pm8901_vreg_get_mode(dev);
 	}
 
-	if (load_uA > vreg->lpm_max_load)
+	if (load_uA >= vreg->hpm_min_load)
 		return REGULATOR_MODE_FAST;
 	return REGULATOR_MODE_STANDBY;
 }
 
 static int pm8901_smps_set_voltage(struct regulator_dev *dev,
-		int min_uV, int max_uV)
+		int min_uV, int max_uV, unsigned *selector)
 {
 	struct pm8901_vreg *vreg = rdev_get_drvdata(dev);
 	struct pm8901_chip *chip = dev_get_drvdata(dev->dev.parent);

@@ -59,6 +59,7 @@
 
 MODULE_LICENSE("GPL");
 MODULE_VERSION(SMSC_DRV_VERSION);
+MODULE_ALIAS("platform:smsc911x");
 
 #if USE_DEBUG > 0
 static int debug = 16;
@@ -1049,7 +1050,7 @@ static int smsc911x_poll(struct napi_struct *napi, int budget)
 		smsc911x_rx_readfifo(pdata, (unsigned int *)skb->head,
 				     pktwords);
 		skb->protocol = eth_type_trans(skb, dev);
-		skb->ip_summed = CHECKSUM_NONE;
+		skb_checksum_none_assert(skb);
 		netif_receive_skb(skb);
 
 		/* Update counters */
@@ -1178,7 +1179,12 @@ static int smsc911x_open(struct net_device *dev)
 	smsc911x_reg_write(pdata, HW_CFG, 0x00050000);
 	smsc911x_reg_write(pdata, AFC_CFG, 0x006E3740);
 
-	/* Make sure EEPROM has finished loading before setting SMSC_GPIO_CFG */
+	/* Increase the legal frame size of VLAN tagged frames to 1522 bytes */
+	spin_lock_irq(&pdata->mac_lock);
+	smsc911x_mac_write(pdata, VLAN1, ETH_P_8021Q);
+	spin_unlock_irq(&pdata->mac_lock);
+
+	/* Make sure EEPROM has finished loading before setting GPIO_CFG */
 	timeout = 50;
 	while ((smsc911x_reg_read(pdata, E2P_CMD) & E2P_CMD_EPC_BUSY_) &&
 	       --timeout) {
@@ -1551,7 +1557,7 @@ static int smsc911x_do_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 	if (!netif_running(dev) || !pdata->phy_dev)
 		return -EINVAL;
 
-	return phy_mii_ioctl(pdata->phy_dev, if_mii(ifr), cmd);
+	return phy_mii_ioctl(pdata->phy_dev, ifr, cmd);
 }
 
 static int
@@ -1994,24 +2000,6 @@ static int __devinit smsc911x_drv_probe(struct platform_device *pdev)
 		goto out_0;
 	}
 
-	if (config->has_reset_gpio) {
-		retval = gpio_request(config->reset_gpio,
-				"smsc911_reset_ethernet");
-		if (retval) {
-			pr_warning("%s: Could not request GPIO %d\n",
-					SMSC_CHIPNAME, config->reset_gpio);
-			goto out_0;
-		}
-
-		retval = gpio_direction_output(config->reset_gpio, 1);
-		if (retval) {
-			pr_warning("%s: Could not set direction for GPIO %d\n",
-					SMSC_CHIPNAME, config->reset_gpio);
-			gpio_free(config->reset_gpio);
-			goto out_0;
-		}
-	}
-
 	dev = alloc_etherdev(sizeof(struct smsc911x_data));
 	if (!dev) {
 		pr_warning("%s: Could not allocate device.\n", SMSC_CHIPNAME);
@@ -2058,7 +2046,7 @@ static int __devinit smsc911x_drv_probe(struct platform_device *pdev)
 	smsc911x_reg_write(pdata, INT_STS, 0xFFFFFFFF);
 
 	retval = request_any_context_irq(dev->irq, smsc911x_irqhandler,
-			     irq_flags | IRQF_SHARED , dev->name, dev);
+			     irq_flags | IRQF_SHARED, dev->name, dev);
 	if (retval < 0) {
 		SMSC_WARNING(PROBE,
 			"Unable to claim requested irq: %d", dev->irq);
@@ -2097,7 +2085,7 @@ static int __devinit smsc911x_drv_probe(struct platform_device *pdev)
 	} else {
 		/* Try reading mac address from device. if EEPROM is present
 		 * it will already have been set */
-		smsc911x_read_mac_address(dev);
+		smsc_get_mac(dev);
 
 		if (is_valid_ether_addr(dev->dev_addr)) {
 			/* eeprom values are valid  so use them */
@@ -2205,6 +2193,7 @@ static struct platform_driver smsc911x_driver = {
 /* Entry point for loading the module */
 static int __init smsc911x_init_module(void)
 {
+	SMSC_INITIALIZE();
 	return platform_driver_register(&smsc911x_driver);
 }
 

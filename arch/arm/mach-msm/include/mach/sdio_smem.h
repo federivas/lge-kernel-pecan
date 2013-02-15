@@ -8,11 +8,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
-
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
  */
 
 #ifndef __SDIO_SMEM_H
@@ -25,6 +20,7 @@
 #define SDIO_SMEM_EVENT_READ_ERR	1
 
 int sdio_smem_register_client(void);
+int sdio_smem_unregister_client(void);
 
 struct sdio_smem_client {
 	void *buf;

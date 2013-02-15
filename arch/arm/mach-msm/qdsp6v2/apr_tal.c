@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -8,11 +8,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
  */
 
 #include <linux/kernel.h>
@@ -29,10 +24,9 @@
 #include <linux/debugfs.h>
 #include <linux/platform_device.h>
 #include <linux/delay.h>
+#include <linux/clk.h>
 #include <mach/msm_smd.h>
-
-#include "apr_tal.h"
-#include "../clock-8x60.h"
+#include <mach/qdsp6v2/apr_tal.h>
 
 static char *svc_names[APR_DEST_MAX][APR_CLIENT_MAX] = {
 	{
@@ -167,8 +161,14 @@ struct apr_svc_ch_dev *apr_tal_open(uint32_t svc, uint32_t dest,
 
 	mutex_lock(&apr_svc_ch[dl][dest][svc].m_lock);
 	if (!apr_svc_ch[dl][dest][svc].dest_state) {
-		wait_event(apr_svc_ch[dl][dest][svc].dest,
-			apr_svc_ch[dl][dest][svc].dest_state);
+		rc = wait_event_timeout(apr_svc_ch[dl][dest][svc].dest,
+			apr_svc_ch[dl][dest][svc].dest_state,
+				msecs_to_jiffies(APR_OPEN_TIMEOUT_MS));
+		if (rc == 0) {
+			pr_err("apr_tal:open timeout\n");
+			mutex_unlock(&apr_svc_ch[dl][dest][svc].m_lock);
+			return NULL;
+		}
 		pr_debug("apr_tal:Wakeup done\n");
 		apr_svc_ch[dl][dest][svc].dest_state = 0;
 	}
@@ -187,6 +187,7 @@ struct apr_svc_ch_dev *apr_tal_open(uint32_t svc, uint32_t dest,
 	if (rc == 0) {
 		pr_err("apr_tal:TIMEOUT for OPEN event\n");
 		mutex_unlock(&apr_svc_ch[dl][dest][svc].m_lock);
+		apr_tal_close(&apr_svc_ch[dl][dest][svc]);
 		return NULL;
 	}
 	if (!apr_svc_ch[dl][dest][svc].dest_state) {
@@ -233,13 +234,13 @@ static int apr_smd_probe(struct platform_device *pdev)
 		wake_up(&apr_svc_ch[APR_DL_SMD][dest][clnt].dest);
 	} else if (pdev->id == APR_DEST_QDSP6) {
 		pr_info("apr_tal:Q6 Is Up\n");
-		local_src_disable(PLL_4);
 		dest = APR_DEST_QDSP6;
 		clnt = APR_CLIENT_AUDIO;
 		apr_svc_ch[APR_DL_SMD][dest][clnt].dest_state = 1;
 		wake_up(&apr_svc_ch[APR_DL_SMD][dest][clnt].dest);
 	} else
 		pr_err("apr_tal:Invalid Dest Id: %d\n", pdev->id);
+
 	return 0;
 }
 

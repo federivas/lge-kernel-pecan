@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -38,6 +38,7 @@
 #define VCD_FRAME_FLAG_EXTRADATA 0x00000040
 #define VCD_FRAME_FLAG_CODECCONFIG  0x00000080
 #define VCD_FRAME_FLAG_BFRAME 0x00100000
+#define VCD_FRAME_FLAG_EOSEQ 0x00200000
 
 #define VCD_FLUSH_INPUT   0x0001
 #define VCD_FLUSH_OUTPUT  0x0002
@@ -58,6 +59,7 @@ enum vcd_frame {
 	VCD_FRAME_P,
 	VCD_FRAME_B,
 	VCD_FRAME_NOTCODED,
+	VCD_FRAME_IDR,
 	VCD_FRAME_32BIT = 0x7fffffff
 };
 

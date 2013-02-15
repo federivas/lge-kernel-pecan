@@ -21,7 +21,7 @@
 
 #if defined(CONFIG_DEBUG_ICEDCC)
 
-#if defined(CONFIG_CPU_V6) || defined(CONFIG_CPU_V7)
+#ifdef defined(CONFIG_CPU_V6) || defined(CONFIG_CPU_V7)
 		.macro	loadsp, rb, tmp
 		.endm
 		.macro	writeb, ch, rb
@@ -125,9 +125,13 @@ wait:		mrc	p14, 0, pc, c0, c1, 0
  * sort out different calling conventions
  */
 		.align
+		.arm				@ Always enter in ARM state
 start:
 		.type	start,#function
-		.rept	8
+ THUMB(		adr	r12, BSYM(1f)	)
+ THUMB(		bx	r12		)
+ THUMB(		.rept	6		)
+ ARM(		.rept	8		)
 		mov	r0, r0
 		.endr
 
@@ -135,6 +139,7 @@ start:
 		.word	0x016f2818		@ Magic numbers to help the loader
 		.word	start			@ absolute load/run zImage address
 		.word	_edata			@ zImage end address
+ THUMB(		.thumb			)
 1:		mov	r7, r1			@ save architecture ID
 		mov	r8, r2			@ save atags pointer
 
@@ -170,9 +175,16 @@ not_angel:
 
 		.text
 		adr	r0, LC0
- ARM(		ldmia	r0, {r1, r2, r3, r4, r5, r6, r11, ip, sp})
- THUMB(		ldmia	r0, {r1, r2, r3, r4, r5, r6, r11, ip}	)
- THUMB(		ldr	sp, [r0, #32]				)
+		ldmia	r0, {r1, r2, r3, r5, r6, r11, ip}
+		ldr	sp, [r0, #28]
+#ifdef CONFIG_AUTO_ZRELADDR
+		@ determine final kernel image address
+		mov	r4, pc
+		and	r4, r4, #0xf8000000
+		add	r4, r4, #TEXT_OFFSET
+#else
+		ldr	r4, =zreladdr
+#endif
 		subs	r0, r0, r1		@ calculate the delta offset
 
 						@ if delta is zero, we are
@@ -310,7 +322,6 @@ wont_overwrite:	mov	r0, r4
 LC0:		.word	LC0			@ r1
 		.word	__bss_start		@ r2
 		.word	_end			@ r3
-		.word	zreladdr		@ r4
 		.word	_start			@ r5
 		.word	_image_size		@ r6
 		.word	_got_start		@ r11
@@ -321,7 +332,7 @@ LC1:		.word	reloc_end - reloc_start
 
 #ifdef CONFIG_ARCH_RPC
 		.globl	params
-params:		ldr	r0, =params_phys
+params:		ldr	r0, =0x10000100		@ params_phys for RPC
 		mov	pc, lr
 		.ltorg
 		.align
@@ -339,9 +350,8 @@ params:		ldr	r0, =params_phys
  *  r4 = kernel execution address
  *  r7 = architecture number
  *  r8 = atags pointer
- *  r9 = run-time address of "start"  (???)
  * On exit,
- *  r1, r2, r3, r9, r10, r12 corrupted
+ *  r0, r1, r2, r3, r9, r10, r12 corrupted
  * This routine must preserve:
  *  r4, r5, r6, r7, r8
  */
@@ -441,7 +451,8 @@ __setup_mmu:	sub	r3, r4, #16384		@ Page directory size
  */
 		mov	r1, #0x1e
 		orr	r1, r1, #3 << 10
-		mov	r2, pc, lsr #20
+		mov	r2, pc
+		mov	r2, r2, lsr #20
 		orr	r1, r1, r2, lsl #20
 		add	r0, r3, r2, lsl #2
 		str	r1, [r0], #4
@@ -664,7 +675,7 @@ proc_types:
 		W(b)	__armv3_mpu_cache_on
 		W(b)	__armv3_mpu_cache_off
 		W(b)	__armv3_mpu_cache_flush
-
+		
 		.word	0x41009400		@ ARM94x
 		.word	0xff00ff00
 		W(b)	__armv4_mpu_cache_on
@@ -780,8 +791,10 @@ proc_types:
  * Turn off the Cache and MMU.  ARMv3 does not support
  * reading the control register, but ARMv4 does.
  *
- * On exit, r0, r1, r2, r3, r9, r12 corrupted
- * This routine must preserve: r4, r6, r7
+ * On exit,
+ *  r0, r1, r2, r3, r9, r12 corrupted
+ * This routine must preserve:
+ *  r4, r6, r7
  */
 		.align	5
 cache_off:	mov	r3, #12			@ cache_off function
@@ -854,7 +867,7 @@ __armv3_mmu_cache_off:
  * Clean and flush the cache to maintain consistency.
  *
  * On exit,
- *  r1, r2, r3, r9, r11, r12 corrupted
+ *  r1, r2, r3, r9, r10, r11, r12 corrupted
  * This routine must preserve:
  *  r0, r4, r5, r6, r7
  */
@@ -879,7 +892,7 @@ __armv4_mpu_cache_flush:
 		mcrne	p15, 0, ip, c7, c5, 0	@ invalidate I cache
 		mcr	p15, 0, ip, c7, c10, 4	@ drain WB
 		mov	pc, lr
-
+		
 __fa526_cache_flush:
 		mov	r1, #0
 		mcr	p15, 0, r1, c7, c14, 0	@ clean and invalidate D cache

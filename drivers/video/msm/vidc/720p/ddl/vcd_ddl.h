@@ -28,6 +28,7 @@
  */
 #ifndef _VCD_DDL_H_
 #define _VCD_DDL_H_
+#include <mach/msm_subsystem_map.h>
 #include "vcd_ddl_api.h"
 #include "vcd_ddl_utils.h"
 #include "vcd_ddl_firmware.h"
@@ -87,6 +88,7 @@ struct ddl_buf_addr {
 	u32 *virtual_base_addr;
 	u32 *align_physical_addr;
 	u32 *align_virtual_addr;
+	struct msm_mapped_buffer *mapped_buffer;
 	u32 buffer_size;
 };
 
@@ -218,6 +220,7 @@ union ddl_codec_data {
 };
 
 struct ddl_context {
+	int memtype;
 	u8 *core_virtual_base_addr;
 	void (*ddl_callback) (u32 event, u32 status, void *payload, size_t sz,
 			      u32 *ddl_handle, void *const client_data);

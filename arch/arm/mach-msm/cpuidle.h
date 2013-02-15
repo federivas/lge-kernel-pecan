@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -41,10 +41,18 @@ struct msm_cpuidle_state {
 	enum msm_pm_sleep_mode mode_nr;
 };
 
+#ifdef CONFIG_CPU_IDLE
 void msm_cpuidle_set_states(struct msm_cpuidle_state *states,
 	int nr_states, struct msm_pm_platform_data *pm_data);
 
 int msm_cpuidle_init(void);
+#else
+static inline void msm_cpuidle_set_states(struct msm_cpuidle_state *states,
+	int nr_states, struct msm_pm_platform_data *pm_data) {}
+
+static inline int msm_cpuidle_init(void)
+{ return -ENOSYS; }
+#endif
 
 #ifdef CONFIG_MSM_SLEEP_STATS
 enum {
@@ -56,19 +64,12 @@ int msm_cpuidle_register_notifier(unsigned int cpu,
 		struct notifier_block *nb);
 int msm_cpuidle_unregister_notifier(unsigned int cpu,
 		struct notifier_block *nb);
-
-int msm_idle_register_cb(void (*pre)(int, unsigned int),
-			void (*post)(int, unsigned int));
 #else
 static inline int msm_cpuidle_register_notifier(unsigned int cpu,
 		struct notifier_block *nb)
 { return -ENODEV; }
 static inline int msm_cpuidle_unregister_notifier(unsigned int cpu,
 		struct notifier_block *nb)
-{ return -ENODEV; }
-
-static inline int msm_idle_register_cb(void (*pre)(int, unsigned int),
-			void (*post)(int, unsigned int))
 { return -ENODEV; }
 #endif
 

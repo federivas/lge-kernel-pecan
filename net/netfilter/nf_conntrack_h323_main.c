@@ -571,9 +571,10 @@ static int h245_help(struct sk_buff *skb, unsigned int protoff,
 	int ret;
 
 	/* Until there's been traffic both ways, don't look in packets. */
-	if (ctinfo != IP_CT_ESTABLISHED && ctinfo != IP_CT_ESTABLISHED_REPLY)
+	if (ctinfo != IP_CT_ESTABLISHED &&
+	    ctinfo != IP_CT_ESTABLISHED + IP_CT_IS_REPLY) {
 		return NF_ACCEPT;
-
+	}
 	pr_debug("nf_ct_h245: skblen = %u\n", skb->len);
 
 	spin_lock_bh(&nf_h323_lock);
@@ -733,11 +734,11 @@ static int callforward_do_filter(const union nf_inet_addr *src,
 		if (!afinfo->route((struct dst_entry **)&rt1, &fl1)) {
 			if (!afinfo->route((struct dst_entry **)&rt2, &fl2)) {
 				if (rt1->rt_gateway == rt2->rt_gateway &&
-				    rt1->u.dst.dev  == rt2->u.dst.dev)
+				    rt1->dst.dev  == rt2->dst.dev)
 					ret = 1;
-				dst_release(&rt2->u.dst);
+				dst_release(&rt2->dst);
 			}
-			dst_release(&rt1->u.dst);
+			dst_release(&rt1->dst);
 		}
 		break;
 	}
@@ -752,11 +753,11 @@ static int callforward_do_filter(const union nf_inet_addr *src,
 			if (!afinfo->route((struct dst_entry **)&rt2, &fl2)) {
 				if (!memcmp(&rt1->rt6i_gateway, &rt2->rt6i_gateway,
 					    sizeof(rt1->rt6i_gateway)) &&
-				    rt1->u.dst.dev == rt2->u.dst.dev)
+				    rt1->dst.dev == rt2->dst.dev)
 					ret = 1;
-				dst_release(&rt2->u.dst);
+				dst_release(&rt2->dst);
 			}
-			dst_release(&rt1->u.dst);
+			dst_release(&rt1->dst);
 		}
 		break;
 	}
@@ -1116,9 +1117,10 @@ static int q931_help(struct sk_buff *skb, unsigned int protoff,
 	int ret;
 
 	/* Until there's been traffic both ways, don't look in packets. */
-	if (ctinfo != IP_CT_ESTABLISHED && ctinfo != IP_CT_ESTABLISHED_REPLY)
+	if (ctinfo != IP_CT_ESTABLISHED &&
+	    ctinfo != IP_CT_ESTABLISHED + IP_CT_IS_REPLY) {
 		return NF_ACCEPT;
-
+	}
 	pr_debug("nf_ct_q931: skblen = %u\n", skb->len);
 
 	spin_lock_bh(&nf_h323_lock);

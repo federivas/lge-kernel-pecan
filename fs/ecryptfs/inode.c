@@ -74,16 +74,20 @@ ecryptfs_create_underlying_file(struct inode *lower_dir_inode,
 	unsigned int flags_save;
 	int rc;
 
-	dentry_save = nd->path.dentry;
-	vfsmount_save = nd->path.mnt;
-	flags_save = nd->flags;
-	nd->path.dentry = lower_dentry;
-	nd->path.mnt = lower_mnt;
-	nd->flags &= ~LOOKUP_OPEN;
+	if (nd) {
+		dentry_save = nd->path.dentry;
+		vfsmount_save = nd->path.mnt;
+		flags_save = nd->flags;
+		nd->path.dentry = lower_dentry;
+		nd->path.mnt = lower_mnt;
+		nd->flags &= ~LOOKUP_OPEN;
+	}
 	rc = vfs_create(lower_dir_inode, lower_dentry, mode, nd);
-	nd->path.dentry = dentry_save;
-	nd->path.mnt = vfsmount_save;
-	nd->flags = flags_save;
+	if (nd) {
+		nd->path.dentry = dentry_save;
+		nd->path.mnt = vfsmount_save;
+		nd->flags = flags_save;
+	}
 	return rc;
 }
 
@@ -185,15 +189,13 @@ static int ecryptfs_initialize_file(struct dentry *ecryptfs_dentry)
 				"context; rc = [%d]\n", rc);
 		goto out;
 	}
-	if (!ecryptfs_inode_to_private(ecryptfs_dentry->d_inode)->lower_file) {
-		rc = ecryptfs_init_persistent_file(ecryptfs_dentry);
-		if (rc) {
-			printk(KERN_ERR "%s: Error attempting to initialize "
-			       "the persistent file for the dentry with name "
-			       "[%s]; rc = [%d]\n", __func__,
-			       ecryptfs_dentry->d_name.name, rc);
-			goto out;
-		}
+	rc = ecryptfs_init_persistent_file(ecryptfs_dentry);
+	if (rc) {
+		printk(KERN_ERR "%s: Error attempting to initialize "
+			"the persistent file for the dentry with name "
+			"[%s]; rc = [%d]\n", __func__,
+			ecryptfs_dentry->d_name.name, rc);
+		goto out;
 	}
 	rc = ecryptfs_write_metadata(ecryptfs_dentry);
 	if (rc) {
@@ -243,8 +245,7 @@ out:
  */
 int ecryptfs_lookup_and_interpose_lower(struct dentry *ecryptfs_dentry,
 					struct dentry *lower_dentry,
-					struct inode *ecryptfs_dir_inode,
-					struct nameidata *ecryptfs_nd)
+					struct inode *ecryptfs_dir_inode)
 {
 	struct dentry *lower_dir_dentry;
 	struct vfsmount *lower_mnt;
@@ -260,7 +261,7 @@ int ecryptfs_lookup_and_interpose_lower(struct dentry *ecryptfs_dentry,
 				   ecryptfs_dentry->d_parent));
 	lower_inode = lower_dentry->d_inode;
 	fsstack_copy_attr_atime(ecryptfs_dir_inode, lower_dir_dentry->d_inode);
-	BUG_ON(!atomic_read(&lower_dentry->d_count));
+	BUG_ON(!lower_dentry->d_count);
 	ecryptfs_set_dentry_private(ecryptfs_dentry,
 				    kmem_cache_alloc(ecryptfs_dentry_info_cache,
 						     GFP_KERNEL));
@@ -292,8 +293,6 @@ int ecryptfs_lookup_and_interpose_lower(struct dentry *ecryptfs_dentry,
 		goto out;
 	if (special_file(lower_inode->i_mode))
 		goto out;
-	if (!ecryptfs_nd)
-		goto out;
 	/* Released in this function */
 	page_virt = kmem_cache_zalloc(ecryptfs_header_cache_2, GFP_USER);
 	if (!page_virt) {
@@ -302,15 +301,13 @@ int ecryptfs_lookup_and_interpose_lower(struct dentry *ecryptfs_dentry,
 		rc = -ENOMEM;
 		goto out;
 	}
-	if (!ecryptfs_inode_to_private(ecryptfs_dentry->d_inode)->lower_file) {
-		rc = ecryptfs_init_persistent_file(ecryptfs_dentry);
-		if (rc) {
-			printk(KERN_ERR "%s: Error attempting to initialize "
-			       "the persistent file for the dentry with name "
-			       "[%s]; rc = [%d]\n", __func__,
-			       ecryptfs_dentry->d_name.name, rc);
-			goto out_free_kmem;
-		}
+	rc = ecryptfs_init_persistent_file(ecryptfs_dentry);
+	if (rc) {
+		printk(KERN_ERR "%s: Error attempting to initialize "
+			"the persistent file for the dentry with name "
+			"[%s]; rc = [%d]\n", __func__,
+			ecryptfs_dentry->d_name.name, rc);
+		goto out_free_kmem;
 	}
 	crypt_stat = &ecryptfs_inode_to_private(
 					ecryptfs_dentry->d_inode)->crypt_stat;
@@ -371,7 +368,6 @@ static struct dentry *ecryptfs_lookup(struct inode *ecryptfs_dir_inode,
 	struct dentry *lower_dir_dentry, *lower_dentry;
 	int rc = 0;
 
-	ecryptfs_dentry->d_op = &ecryptfs_dops;
 	if ((ecryptfs_dentry->d_name.len == 1
 	     && !strcmp(ecryptfs_dentry->d_name.name, "."))
 	    || (ecryptfs_dentry->d_name.len == 2
@@ -411,7 +407,7 @@ static struct dentry *ecryptfs_lookup(struct inode *ecryptfs_dir_inode,
 	mutex_lock(&lower_dir_dentry->d_inode->i_mutex);
 	lower_dentry = lookup_one_len(encrypted_and_encoded_name,
 				      lower_dir_dentry,
-				      encrypted_and_encoded_name_size - 1);
+				      encrypted_and_encoded_name_size);
 	mutex_unlock(&lower_dir_dentry->d_inode->i_mutex);
 	if (IS_ERR(lower_dentry)) {
 		rc = PTR_ERR(lower_dentry);
@@ -422,8 +418,7 @@ static struct dentry *ecryptfs_lookup(struct inode *ecryptfs_dir_inode,
 	}
 lookup_and_interpose:
 	rc = ecryptfs_lookup_and_interpose_lower(ecryptfs_dentry, lower_dentry,
-						 ecryptfs_dir_inode,
-						 ecryptfs_nd);
+						 ecryptfs_dir_inode);
 	goto out;
 out_d_drop:
 	d_drop(ecryptfs_dentry);
@@ -810,10 +805,20 @@ static int truncate_upper(struct dentry *dentry, struct iattr *ia,
 		size_t num_zeros = (PAGE_CACHE_SIZE
 				    - (ia->ia_size & ~PAGE_CACHE_MASK));
 
+
+		/*
+		 * XXX(truncate) this should really happen at the begginning
+		 * of ->setattr.  But the code is too messy to that as part
+		 * of a larger patch.  ecryptfs is also totally missing out
+		 * on the inode_change_ok check at the beginning of
+		 * ->setattr while would include this.
+		 */
+		rc = inode_newsize_ok(inode, ia->ia_size);
+		if (rc)
+			goto out;
+
 		if (!(crypt_stat->flags & ECRYPTFS_ENCRYPTED)) {
-			rc = simple_setsize(inode, ia->ia_size);
-			if (rc)
-				goto out;
+			truncate_setsize(inode, ia->ia_size);
 			lower_ia->ia_size = ia->ia_size;
 			lower_ia->ia_valid |= ATTR_SIZE;
 			goto out;
@@ -836,7 +841,7 @@ static int truncate_upper(struct dentry *dentry, struct iattr *ia,
 				goto out;
 			}
 		}
-		simple_setsize(inode, ia->ia_size);
+		truncate_setsize(inode, ia->ia_size);
 		rc = ecryptfs_write_inode_size_to_metadata(inode);
 		if (rc) {
 			printk(KERN_ERR	"Problem with "
@@ -888,8 +893,10 @@ int ecryptfs_truncate(struct dentry *dentry, loff_t new_length)
 }
 
 static int
-ecryptfs_permission(struct inode *inode, int mask)
+ecryptfs_permission(struct inode *inode, int mask, unsigned int flags)
 {
+	if (flags & IPERM_FLAG_RCU)
+		return -ECHILD;
 	return inode_permission(ecryptfs_inode_to_lower(inode), mask);
 }
 
@@ -1003,6 +1010,8 @@ int ecryptfs_getattr(struct vfsmount *mnt, struct dentry *dentry,
 	rc = vfs_getattr(ecryptfs_dentry_to_lower_mnt(dentry),
 			 ecryptfs_dentry_to_lower(dentry), &lower_stat);
 	if (!rc) {
+		fsstack_copy_attr_all(dentry->d_inode,
+				      ecryptfs_inode_to_lower(dentry->d_inode));
 		generic_fillattr(dentry->d_inode, stat);
 		stat->blocks = lower_stat.blocks;
 	}

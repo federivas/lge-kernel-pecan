@@ -270,6 +270,8 @@ struct pci_dev {
 	unsigned int	d1_support:1;	/* Low power state D1 is supported */
 	unsigned int	d2_support:1;	/* Low power state D2 is supported */
 	unsigned int	no_d1d2:1;	/* Only allow D0 and D3 */
+	unsigned int	mmio_always_on:1;	/* disallow turning off io/mem
+						   decoding during bar sizing */
 	unsigned int	wakeup_prepared:1;
 	unsigned int	d3_delay;	/* D3->D0 transition time in ms */
 
@@ -539,7 +541,7 @@ struct pci_error_handlers {
 struct module;
 struct pci_driver {
 	struct list_head node;
-	char *name;
+	const char *name;
 	const struct pci_device_id *id_table;	/* must be non-NULL for probe to be called */
 	int  (*probe)  (struct pci_dev *dev, const struct pci_device_id *id);	/* New device inserted */
 	void (*remove) (struct pci_dev *dev);	/* Device removed (NULL if not a hot-plug capable driver) */
@@ -804,7 +806,7 @@ size_t pci_get_rom_size(struct pci_dev *pdev, void __iomem *rom, size_t size);
 
 /* Power management related routines */
 int pci_save_state(struct pci_dev *dev);
-int pci_restore_state(struct pci_dev *dev);
+void pci_restore_state(struct pci_dev *dev);
 int __pci_complete_power_transition(struct pci_dev *dev, pci_power_t state);
 int pci_set_power_state(struct pci_dev *dev, pci_power_t state);
 pci_power_t pci_choose_state(struct pci_dev *dev, pm_message_t state);
@@ -817,6 +819,8 @@ pci_power_t pci_target_state(struct pci_dev *dev);
 int pci_prepare_to_sleep(struct pci_dev *dev);
 int pci_back_from_sleep(struct pci_dev *dev);
 bool pci_dev_run_wake(struct pci_dev *dev);
+bool pci_check_pme_status(struct pci_dev *dev);
+void pci_pme_wakeup_bus(struct pci_bus *bus);
 
 static inline int pci_enable_wake(struct pci_dev *dev, pci_power_t state,
 				  bool enable)
@@ -989,13 +993,28 @@ extern void pci_restore_msi_state(struct pci_dev *dev);
 extern int pci_msi_enabled(void);
 #endif
 
+#ifdef CONFIG_PCIEPORTBUS
+extern bool pcie_ports_disabled;
+extern bool pcie_ports_auto;
+#else
+#define pcie_ports_disabled	true
+#define pcie_ports_auto		false
+#endif
+
 #ifndef CONFIG_PCIEASPM
-static inline int pcie_aspm_enabled(void)
-{
-	return 0;
-}
+static inline int pcie_aspm_enabled(void) { return 0; }
+static inline bool pcie_aspm_support_enabled(void) { return false; }
 #else
 extern int pcie_aspm_enabled(void);
+extern bool pcie_aspm_support_enabled(void);
+#endif
+
+#ifdef CONFIG_PCIEAER
+void pci_no_aer(void);
+bool pci_aer_available(void);
+#else
+static inline void pci_no_aer(void) { }
+static inline bool pci_aer_available(void) { return false; }
 #endif
 
 #ifndef CONFIG_PCIE_ECRC
@@ -1163,10 +1182,8 @@ static inline int pci_save_state(struct pci_dev *dev)
 	return 0;
 }
 
-static inline int pci_restore_state(struct pci_dev *dev)
-{
-	return 0;
-}
+static inline void pci_restore_state(struct pci_dev *dev)
+{ }
 
 static inline int pci_set_power_state(struct pci_dev *dev, pci_power_t state)
 {
@@ -1211,6 +1228,9 @@ static inline struct pci_dev *pci_get_slot(struct pci_bus *bus,
 static inline struct pci_dev *pci_get_bus_and_slot(unsigned int bus,
 						unsigned int devfn)
 { return NULL; }
+
+static inline int pci_domain_nr(struct pci_bus *bus)
+{ return 0; }
 
 #define dev_is_pci(d) (false)
 #define dev_is_pf(d) (false)

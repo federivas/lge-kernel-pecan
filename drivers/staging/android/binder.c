@@ -3,7 +3,6 @@
  * Android IPC Subsystem
  *
  * Copyright (C) 2007-2008 Google, Inc.
- * Copyright (c) 2012, Code Aurora Forum. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -844,7 +843,8 @@ static void binder_delete_free_buffer(struct binder_proc *proc,
 			free_page_end = 0;
 		binder_debug(BINDER_DEBUG_BUFFER_ALLOC,
 			     "binder: %d: merge free, buffer %p "
-			     "share page with %p\n", proc->pid, buffer, prev);
+			     "share page with prev %p\n", proc->pid,
+			     buffer, prev);
 	}
 
 	if (!list_is_last(&buffer->entry, &proc->buffers)) {
@@ -857,8 +857,8 @@ static void binder_delete_free_buffer(struct binder_proc *proc,
 				free_page_start = 0;
 			binder_debug(BINDER_DEBUG_BUFFER_ALLOC,
 				     "binder: %d: merge free, buffer"
-				     " %p share page with %p\n", proc->pid,
-				     buffer, prev);
+				     " %p share page with next %p\n", proc->pid,
+				     buffer, next);
 		}
 	}
 	list_del(&buffer->entry);
@@ -3665,4 +3665,3 @@ static int __init binder_init(void)
 device_initcall(binder_init);
 
 MODULE_LICENSE("GPL v2");
-

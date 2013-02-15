@@ -26,6 +26,8 @@ source "drivers/ata/Kconfig"
 
 source "drivers/md/Kconfig"
 
+source "drivers/target/Kconfig"
+
 source "drivers/message/fusion/Kconfig"
 
 source "drivers/firewire/Kconfig"
@@ -49,6 +51,8 @@ source "drivers/char/Kconfig"
 source "drivers/i2c/Kconfig"
 
 source "drivers/spi/Kconfig"
+
+source "drivers/slimbus/Kconfig"
 
 source "drivers/pps/Kconfig"
 
@@ -88,6 +92,8 @@ source "drivers/memstick/Kconfig"
 
 source "drivers/leds/Kconfig"
 
+source "drivers/nfc/Kconfig"
+
 source "drivers/switch/Kconfig"
 
 source "drivers/accessibility/Kconfig"
@@ -113,4 +119,6 @@ source "drivers/xen/Kconfig"
 source "drivers/staging/Kconfig"
 
 source "drivers/platform/Kconfig"
+
+source "drivers/clk/Kconfig"
 endmenu

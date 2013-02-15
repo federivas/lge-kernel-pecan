@@ -127,8 +127,7 @@ static int tcf_pedit(struct sk_buff *skb, struct tc_action *a,
 	int i, munged = 0;
 	unsigned int off;
 
-	if (!(skb->tc_verd & TC_OK2MUNGE)) {
-		/* should we set skb->cloned? */
+	if (skb_cloned(skb)) {
 		if (pskb_expand_head(skb, 0, 0, GFP_ATOMIC)) {
 			return p->tcf_action;
 		}
@@ -188,8 +187,7 @@ static int tcf_pedit(struct sk_buff *skb, struct tc_action *a,
 bad:
 	p->tcf_qstats.overlimits++;
 done:
-	p->tcf_bstats.bytes += qdisc_pkt_len(skb);
-	p->tcf_bstats.packets++;
+	bstats_update(&p->tcf_bstats, skb);
 	spin_unlock(&p->tcf_lock);
 	return p->tcf_action;
 }

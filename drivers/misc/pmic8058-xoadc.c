@@ -9,11 +9,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
- *
  */
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -21,7 +16,7 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/err.h>
-#include <linux/m_adc.h>
+#include <linux/msm_adc.h>
 #include <linux/pmic8058-xoadc.h>
 #include <linux/mfd/pmic8058.h>
 #include <linux/interrupt.h>
@@ -135,6 +130,7 @@ static int32_t pm8058_xoadc_arb_cntrl(uint32_t arb_cntrl,
 	if (arb_cntrl) {
 		data_arb_cntrl |= ADC_ARB_USRP_CNTRL_EN_ARB;
 		msm_xo_mode_vote(adc_pmic->adc_voter, MSM_XO_MODE_ON);
+		adc_pmic->pdata->xoadc_mpp_config();
 	}
 
 	/* Write twice to the CNTRL register for the arbiter settings

@@ -8,11 +8,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
  */
 
 #include <linux/kernel.h>
@@ -282,6 +277,7 @@ static struct platform_device msm_root_iommu_dev = {
 
 static struct msm_iommu_dev jpegd_iommu = {
 	.name = "jpegd",
+	.clk_rate = -1
 };
 
 static struct msm_iommu_dev vpe_iommu = {
@@ -306,6 +302,7 @@ static struct msm_iommu_dev ijpeg_iommu = {
 
 static struct msm_iommu_dev vfe_iommu = {
 	.name = "vfe",
+	.clk_rate = -1
 };
 
 static struct msm_iommu_dev vcodec_a_iommu = {
@@ -318,17 +315,20 @@ static struct msm_iommu_dev vcodec_b_iommu = {
 
 static struct msm_iommu_dev gfx3d_iommu = {
 	.name = "gfx3d",
+	.clk_rate = 27000000
 };
 
 static struct msm_iommu_dev gfx2d0_iommu = {
 	.name = "gfx2d0",
+	.clk_rate = 27000000
 };
 
 static struct msm_iommu_dev gfx2d1_iommu = {
 	.name = "gfx2d1",
+	.clk_rate = 27000000
 };
 
-struct platform_device msm_device_iommu_jpegd = {
+static struct platform_device msm_device_iommu_jpegd = {
 	.name = "msm_iommu",
 	.id = 0,
 	.dev = {
@@ -388,7 +388,7 @@ static struct platform_device msm_device_iommu_ijpeg = {
 	.resource = msm_iommu_ijpeg_resources,
 };
 
-struct platform_device msm_device_iommu_vfe = {
+static struct platform_device msm_device_iommu_vfe = {
 	.name = "msm_iommu",
 	.id = 6,
 	.dev = {
@@ -398,7 +398,7 @@ struct platform_device msm_device_iommu_vfe = {
 	.resource = msm_iommu_vfe_resources,
 };
 
-struct platform_device msm_device_iommu_vcodec_a = {
+static struct platform_device msm_device_iommu_vcodec_a = {
 	.name = "msm_iommu",
 	.id = 7,
 	.dev = {
@@ -408,7 +408,7 @@ struct platform_device msm_device_iommu_vcodec_a = {
 	.resource = msm_iommu_vcodec_a_resources,
 };
 
-struct platform_device msm_device_iommu_vcodec_b = {
+static struct platform_device msm_device_iommu_vcodec_b = {
 	.name = "msm_iommu",
 	.id = 8,
 	.dev = {
@@ -418,7 +418,7 @@ struct platform_device msm_device_iommu_vcodec_b = {
 	.resource = msm_iommu_vcodec_b_resources,
 };
 
-struct platform_device msm_device_iommu_gfx3d = {
+static struct platform_device msm_device_iommu_gfx3d = {
 	.name = "msm_iommu",
 	.id = 9,
 	.dev = {
@@ -428,7 +428,7 @@ struct platform_device msm_device_iommu_gfx3d = {
 	.resource = msm_iommu_gfx3d_resources,
 };
 
-struct platform_device msm_device_iommu_gfx2d0 = {
+static struct platform_device msm_device_iommu_gfx2d0 = {
 	.name = "msm_iommu",
 	.id = 10,
 	.dev = {

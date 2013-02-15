@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2009, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2008-2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -8,11 +8,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
  *
  */
 
@@ -55,20 +50,21 @@ extern u32 msm_fb_debug_enabled;
 extern struct workqueue_struct *mdp_dma_wq;
 
 int vsync_start_y_adjust = 4;
-#ifdef CONFIG_LGE_BLUE_ERROR_HANDLER
-extern int LG_ErrorHandler_enable ;	/*LGE_CHANGE [bluerti@lge.com] */
-#endif
+
 static void mdp_dma2_update_lcd(struct msm_fb_data_type *mfd)
 {
 	MDPIBUF *iBuf = &mfd->ibuf;
 	int mddi_dest = FALSE;
+	int cmd_mode = FALSE;
 	uint32 outBpp = iBuf->bpp;
 	uint32 dma2_cfg_reg;
 	uint8 *src;
 	uint32 mddi_ld_param;
 	uint16 mddi_vdo_packet_reg;
+#ifndef CONFIG_FB_MSM_MDP303
 	struct msm_fb_panel_data *pdata =
 	    (struct msm_fb_panel_data *)mfd->pdev->dev.platform_data;
+#endif
 	uint32 ystride = mfd->fbi->fix.line_length;
 	uint32 mddi_pkt_desc;
 
@@ -139,6 +135,11 @@ static void mdp_dma2_update_lcd(struct msm_fb_data_type *mfd)
 			dma2_cfg_reg |= DMA_MDDI_DMAOUT_LCD_SEL_EXTERNAL;
 			mddi_ld_param = 2;
 		}
+#ifdef CONFIG_FB_MSM_MDP303
+	} else if (mfd->panel_info.type == MIPI_CMD_PANEL) {
+		cmd_mode = TRUE;
+		dma2_cfg_reg |= DMA_OUT_SEL_DSI_CMD;
+#endif
 	} else {
 		if (mfd->panel_info.pdest == DISPLAY_1) {
 			dma2_cfg_reg |= DMA_AHBM_LCD_SEL_PRIMARY;
@@ -148,9 +149,6 @@ static void mdp_dma2_update_lcd(struct msm_fb_data_type *mfd)
 			outp32(MDP_EBI2_LCD1, mfd->data_port_phys);
 		}
 	}
-
-	/* LGE_CHANGE, Enabling dither */
-	dma2_cfg_reg |= DMA_DITHER_EN;
 
 	src = (uint8 *) iBuf->buf;
 	/* starting input address */
@@ -168,7 +166,12 @@ static void mdp_dma2_update_lcd(struct msm_fb_data_type *mfd)
 	MDP_OUTP(MDP_CMD_DEBUG_ACCESS_BASE + 0x0188, src);
 	MDP_OUTP(MDP_CMD_DEBUG_ACCESS_BASE + 0x018C, ystride);
 #else
-	MDP_OUTP(MDP_BASE + 0x90004, (iBuf->dma_h << 16 | iBuf->dma_w));
+	if (cmd_mode)
+		MDP_OUTP(MDP_BASE + 0x90004,
+			(mfd->panel_info.yres << 16 | mfd->panel_info.xres));
+	else
+		MDP_OUTP(MDP_BASE + 0x90004, (iBuf->dma_h << 16 | iBuf->dma_w));
+
 	MDP_OUTP(MDP_BASE + 0x90008, src);
 	MDP_OUTP(MDP_BASE + 0x9000c, ystride);
 #endif
@@ -187,42 +190,34 @@ static void mdp_dma2_update_lcd(struct msm_fb_data_type *mfd)
 		    DMA_DSTC1B_5BITS | DMA_DSTC2R_5BITS;
 	}
 
-	if (mddi_dest) {
+#ifndef CONFIG_FB_MSM_MDP303
 
+	if (mddi_dest) {
 #ifdef CONFIG_FB_MSM_MDP22
 		MDP_OUTP(MDP_CMD_DEBUG_ACCESS_BASE + 0x0194,
 			 (iBuf->dma_y << 16) | iBuf->dma_x);
 		MDP_OUTP(MDP_CMD_DEBUG_ACCESS_BASE + 0x01a0, mddi_ld_param);
 		MDP_OUTP(MDP_CMD_DEBUG_ACCESS_BASE + 0x01a4,
-	/* Don't apply 6013 patch only when using Hitachi HVGA module. 2010-07-28. minjong.gong@lge.com */
-	#if defined (CONFIG_FB_MSM_MDDI_HITACHI_HVGA)
-			(MDDI_VDO_PACKET_DESC << 16) | mddi_vdo_packet_reg);
-	#else
-			(mddi_pkt_desc << 16) | mddi_vdo_packet_reg);
-	#endif
+			 (mddi_pkt_desc << 16) | mddi_vdo_packet_reg);
 #else
 		MDP_OUTP(MDP_BASE + 0x90010, (iBuf->dma_y << 16) | iBuf->dma_x);
 		MDP_OUTP(MDP_BASE + 0x00090, mddi_ld_param);
-/* LGE_CHANGE [dojip.kim@lge.com] 2010-04-23, [LS670] fixed the pixel format */
-#if defined(CONFIG_FB_MSM_MDDI_NOVATEK_HVGA)
 		MDP_OUTP(MDP_BASE + 0x00094,
-			 (0x5565 /*MDDI_VDO_PACKET_DESC*/ << 16) | mddi_vdo_packet_reg);
-#else /* original */
-		MDP_OUTP(MDP_BASE + 0x00094,
-	/* Don't apply 6013 patch only when using Hitachi HVGA module. 2010-07-28. minjong.gong@lge.com */
-	#if defined (CONFIG_FB_MSM_MDDI_HITACHI_HVGA)
-			(MDDI_VDO_PACKET_DESC << 16) | mddi_vdo_packet_reg);
-	#else
-			(mddi_pkt_desc << 16) | mddi_vdo_packet_reg);
-	#endif
-#endif
-
+			 (mddi_pkt_desc << 16) | mddi_vdo_packet_reg);
 #endif
 	} else {
 		/* setting EBI2 LCDC write window */
 		pdata->set_rect(iBuf->dma_x, iBuf->dma_y, iBuf->dma_w,
 				iBuf->dma_h);
 	}
+#else
+	if (mfd->panel_info.type == MIPI_CMD_PANEL) {
+		/* dma_p = 0, dma_s = 1 */
+		 MDP_OUTP(MDP_BASE + 0xF1000, 0x10);
+		 /* enable dsi trigger on dma_p */
+		 MDP_OUTP(MDP_BASE + 0xF1004, 0x01);
+	}
+#endif
 
 	/* dma2 config register */
 #ifdef MDP_HW_VSYNC
@@ -292,6 +287,40 @@ enum hrtimer_restart mdp_dma2_vsync_hrtimer_handler(struct hrtimer *ht)
 
 	return HRTIMER_NORESTART;
 }
+
+
+#ifdef CONFIG_FB_MSM_MDP303
+static int busy_wait_cnt;
+
+void	mdp3_dsi_cmd_dma_busy_wait(struct msm_fb_data_type *mfd)
+{
+	unsigned long flag;
+	int need_wait = 0;
+
+#ifdef DSI_CLK_CTRL
+	mod_timer(&dsi_clock_timer, jiffies + HZ); /* one second */
+#endif
+
+	spin_lock_irqsave(&mdp_spin_lock, flag);
+#ifdef DSI_CLK_CTRL
+	if (mipi_dsi_clk_on == 0)
+		mipi_dsi_turn_on_clks();
+#endif
+
+	if (mfd->dma->busy == TRUE) {
+		if (busy_wait_cnt == 0)
+			INIT_COMPLETION(mfd->dma->comp);
+		busy_wait_cnt++;
+		need_wait++;
+	}
+	spin_unlock_irqrestore(&mdp_spin_lock, flag);
+
+	if (need_wait) {
+		/* wait until DMA finishes the current job */
+		wait_for_completion(&mfd->dma->comp);
+	}
+}
+#endif
 
 static void mdp_dma_schedule(struct msm_fb_data_type *mfd, uint32 term)
 {
@@ -542,13 +571,6 @@ void mdp_dma_pan_update(struct fb_info *info)
 		/* waiting for this update to complete */
 		mfd->pan_waiting = TRUE;
 		wait_for_completion_killable(&mfd->pan_comp);
-#ifdef CONFIG_LGE_BLUE_ERROR_HANDLER
-		/*LGE_CHANGE_S [bluerti@lge.com] 2009-08-24 */
-		if (LG_ErrorHandler_enable) {
-			mfd->dma_fnc(mfd);
-		}
-		/*LGE_CHANGE_E [bluerti@lge.com] */
-#endif
 	} else
 		mfd->dma_fnc(mfd);
 }

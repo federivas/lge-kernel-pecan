@@ -30,22 +30,14 @@
 #include <asm/unistd.h>
 #include <asm/traps.h>
 #include <asm/unwind.h>
+#include <asm/tls.h>
 
 #include "ptrace.h"
 #include "signal.h"
 
 static const char *handler[]= { "prefetch abort", "data abort", "address exception", "interrupt" };
 
-#ifdef CONFIG_LGE_BLUE_ERROR_HANDLER
-//LGE_CHANGE_S [bluerti@lge.com] 2009-08-20
-#include "../mach-msm/lge/lge_errorhandler.h"
-char crash_buf[LGE_ERROR_MAX_ROW][LGE_ERROR_MAX_COLUMN];
-extern void smsm_reset_modem(unsigned mode);
-static int lge_error_analyzing = 0;
-static int lge_error_fb_cnt = 0;
-extern void ram_console_panic(void);
-// LGE_CHANGE_E [bluerti@lge.com] 2009-08-20
-#endif
+void *vectors_page;
 
 #ifdef CONFIG_DEBUG_USER
 unsigned int user_debug;
@@ -63,27 +55,7 @@ static void dump_mem(const char *, const char *, unsigned long, unsigned long);
 void dump_backtrace_entry(unsigned long where, unsigned long from, unsigned long frame)
 {
 #ifdef CONFIG_KALLSYMS
-	char sym1[KSYM_SYMBOL_LEN], sym2[KSYM_SYMBOL_LEN];
-#ifdef CONFIG_LGE_BLUE_ERROR_HANDLER
- // LGE_CHANGE_S [bluerti@lge.com]
-	if (lge_error_analyzing == 1){
-	  char * temp;
-	  sprintf(crash_buf[lge_error_fb_cnt], "[< >] " ); 
-	  temp = crash_buf[lge_error_fb_cnt]; 
-	  temp+=13; 
-	  sprint_symbol(temp, where);		
-	  lge_error_fb_cnt++;
-	} else {	// Normal case 
-	sprint_symbol(sym1, where);
-	sprint_symbol(sym2, from);
-	printk("[<%08lx>] (%s) from [<%08lx>] (%s)\n", where, sym1, from, sym2);
-	}
- // LGE_CHANGE_E [bluerti@lge.com]
-#else
-	sprint_symbol(sym1, where);
-	sprint_symbol(sym2, from);
-	printk("[<%08lx>] (%s) from [<%08lx>] (%s)\n", where, sym1, from, sym2);
-#endif
+	printk("[<%08lx>] (%pS) from [<%08lx>] (%pS)\n", where, (void *)where, from, (void *)from);
 #else
 	printk("Function entered at [<%08lx>] from [<%08lx>]\n", where, from);
 #endif
@@ -254,18 +226,12 @@ void show_stack(struct task_struct *tsk, unsigned long *sp)
 #define S_SMP ""
 #endif
 
-#ifdef CONFIG_MACH_LGE
-extern int hidden_reset_enable;
-#endif
 static int __die(const char *str, int err, struct thread_info *thread, struct pt_regs *regs)
 {
 	struct task_struct *tsk = thread->task;
 	static int die_counter;
 	int ret;
 
-#ifdef CONFIG_MACH_LGE
-	printk(KERN_EMERG">>>>>\n");
-#endif
 	printk(KERN_EMERG "Internal error: %s: %x [#%d]" S_PREEMPT S_SMP "\n",
 	       str, err, ++die_counter);
 	sysfs_printk_last_file();
@@ -283,54 +249,10 @@ static int __die(const char *str, int err, struct thread_info *thread, struct pt
 	if (!user_mode(regs) || in_interrupt()) {
 		dump_mem(KERN_EMERG, "Stack: ", regs->ARM_sp,
 			 THREAD_SIZE + (unsigned long)task_stack_page(tsk));
-#ifdef CONFIG_MACH_LGE
-		printk(KERN_EMERG"vvvvv\n");
-#endif
 		dump_backtrace(regs, tsk);
 		dump_instr(KERN_EMERG, regs);
-#ifdef CONFIG_MACH_LGE
-		printk(KERN_EMERG"^^^^^\n");
-#endif
 	}
-#ifdef CONFIG_LGE_BLUE_ERROR_HANDLER
-		/* LGE_CHANGE_S [bluerti@lge.com] 2010-07-22 */
-	if (!hidden_reset_enable) {
-		//extern int LG_ErrorHandler_enable;
-		char * temp;
-		int ret;
 
-		//if (!LG_ErrorHandler_enable) {
-			lge_error_analyzing = 1;
-			sprintf(crash_buf[1],"---------------------------------------");
-			sprintf(crash_buf[2], "Linux Kernel Panic ");
-			sprintf(crash_buf[3], "Process %s (pid: %d)",tsk->comm, task_pid_nr(tsk));
-			sprintf(crash_buf[4], "--------------------------------------");
-			sprintf(crash_buf[5], "PC: " ); temp = crash_buf[5]; temp+=4; sprint_symbol(temp, instruction_pointer(regs));
-			sprintf(crash_buf[6], "LR: " ); temp = crash_buf[6]; temp+=4; sprint_symbol(temp, regs->ARM_lr);
-			sprintf(crash_buf[7], "pc : [<%08lx>]    lr : [<%08lx>]", regs->ARM_pc, regs->ARM_lr); 
-			sprintf(crash_buf[8], "psr: %08lx  sp : %08lx", regs->ARM_cpsr, regs->ARM_sp);
-			sprintf(crash_buf[9], "ip : %08lx  fp : %08lx", regs->ARM_ip, regs->ARM_fp);
-		    sprintf(crash_buf[10],"r10: %08lx  r9 : %08lx", regs->ARM_r10, regs->ARM_r9); 
-			sprintf(crash_buf[11],"r8 : %08lx  r7 : %08lx", regs->ARM_r8, regs->ARM_r7);
-			sprintf(crash_buf[12],"r6 : %08lx  r5 : %08lx", regs->ARM_r6,regs->ARM_r5);  
-			sprintf(crash_buf[13],"r4 : %08lx  r3 : %08lx",regs->ARM_r4, regs->ARM_r3);
-			sprintf(crash_buf[14],"r2 : %08lx  r1 : %08lx",regs->ARM_r2,regs->ARM_r1);
-			sprintf(crash_buf[15],"r0 : %08lx", regs->ARM_r0);
-			sprintf(crash_buf[16], "-------<Call Stack>------------------");
-			lge_error_fb_cnt = 17;
-			dump_backtrace(regs, tsk);
-			dump_instr(KERN_EMERG, regs);
-			//smsm_reset_modem(SMSM_APPS_SHUTDOWN); //[blue.park@lge.com] It will be informed a kernel panic to Modem side.
-			ret = LGE_ErrorHandler_Main(APPL_CRASH, (char *)crash_buf);
-			lge_error_analyzing = 0;
-			
-			smsm_reset_modem(ret);
-			while(1) 
-				;
-		//}
-	}
-	/* LGE_CHANGE_E [bluerti@lge.com] 2010-07-22 */
-#endif
 	return ret;
 }
 
@@ -535,10 +457,9 @@ do_cache_op(unsigned long start, unsigned long end, int flags)
 		flush_cache_user_range(start, end);
 
 #ifdef CONFIG_ARCH_MSM7X27
-		dmb();
+		mb();
 #endif
 		return;
-
 	}
 	up_read(&mm->mmap_sem);
 }
@@ -603,18 +524,20 @@ asmlinkage int arm_syscall(int no, struct pt_regs *regs)
 
 	case NR(set_tls):
 		thread->tp_value = regs->ARM_r0;
-#if defined(CONFIG_HAS_TLS_REG)
-		asm ("mcr p15, 0, %0, c13, c0, 3" : : "r" (regs->ARM_r0) );
-//#elif !defined(CONFIG_TLS_REG_EMUL)
-#endif
-		/*
-		 * User space must never try to access this directly.
-		 * Expect your app to break eventually if you do so.
-		 * The user helper at 0xffff0fe0 must be used instead.
-		 * (see entry-armv.S for details)
-		 */
-		*((unsigned int *)0xffff0ff0) = regs->ARM_r0;
-//#endif
+		if (tls_emu)
+			return 0;
+		if (has_tls_reg) {
+			asm ("mcr p15, 0, %0, c13, c0, 3"
+				: : "r" (regs->ARM_r0));
+		} else {
+			/*
+			 * User space must never try to access this directly.
+			 * Expect your app to break eventually if you do so.
+			 * The user helper at 0xffff0fe0 must be used instead.
+			 * (see entry-armv.S for details)
+			 */
+			*((unsigned int *)0xffff0ff0) = regs->ARM_r0;
+		}
 		return 0;
 
 #ifdef CONFIG_NEEDS_SYSCALL_FOR_CMPXCHG
@@ -793,19 +716,19 @@ void __readwrite_bug(const char *fn)
 }
 EXPORT_SYMBOL(__readwrite_bug);
 
-void __pte_error(const char *file, int line, unsigned long val)
+void __pte_error(const char *file, int line, pte_t pte)
 {
-	printk("%s:%d: bad pte %08lx.\n", file, line, val);
+	printk("%s:%d: bad pte %08lx.\n", file, line, pte_val(pte));
 }
 
-void __pmd_error(const char *file, int line, unsigned long val)
+void __pmd_error(const char *file, int line, pmd_t pmd)
 {
-	printk("%s:%d: bad pmd %08lx.\n", file, line, val);
+	printk("%s:%d: bad pmd %08lx.\n", file, line, pmd_val(pmd));
 }
 
-void __pgd_error(const char *file, int line, unsigned long val)
+void __pgd_error(const char *file, int line, pgd_t pgd)
 {
-	printk("%s:%d: bad pgd %08lx.\n", file, line, val);
+	printk("%s:%d: bad pgd %08lx.\n", file, line, pgd_val(pgd));
 }
 
 asmlinkage void __div0(void)
@@ -829,9 +752,23 @@ void __init trap_init(void)
 	return;
 }
 
+static void __init kuser_get_tls_init(unsigned long vectors)
+{
+	/*
+	 * vectors + 0xfe0 = __kuser_get_tls
+	 * vectors + 0xfe8 = hardware TLS instruction at 0xffff0fe8
+	 */
+	if (tls_emu || has_tls_reg)
+		memcpy((void *)vectors + 0xfe0, (void *)vectors + 0xfe8, 4);
+}
+
 void __init early_trap_init(void)
 {
+#if defined(CONFIG_CPU_USE_DOMAINS)
 	unsigned long vectors = CONFIG_VECTORS_BASE;
+#else
+	unsigned long vectors = (unsigned long)vectors_page;
+#endif
 	extern char __stubs_start[], __stubs_end[];
 	extern char __vectors_start[], __vectors_end[];
 	extern char __kuser_helper_start[], __kuser_helper_end[];
@@ -847,13 +784,18 @@ void __init early_trap_init(void)
 	memcpy((void *)vectors + 0x1000 - kuser_sz, __kuser_helper_start, kuser_sz);
 
 	/*
+	 * Do processor specific fixups for the kuser helpers
+	 */
+	kuser_get_tls_init(vectors);
+
+	/*
 	 * Copy signal return handlers into the vector page, and
 	 * set sigreturn to be a pointer to these.
 	 */
-	memcpy((void *)KERN_SIGRETURN_CODE, sigreturn_codes,
-	       sizeof(sigreturn_codes));
-	memcpy((void *)KERN_RESTART_CODE, syscall_restart_code,
-	       sizeof(syscall_restart_code));
+	memcpy((void *)(vectors + KERN_SIGRETURN_CODE - CONFIG_VECTORS_BASE),
+	       sigreturn_codes, sizeof(sigreturn_codes));
+	memcpy((void *)(vectors + KERN_RESTART_CODE - CONFIG_VECTORS_BASE),
+	       syscall_restart_code, sizeof(syscall_restart_code));
 
 	flush_icache_range(vectors, vectors + PAGE_SIZE);
 	modify_domain(DOMAIN_USER, DOMAIN_CLIENT);

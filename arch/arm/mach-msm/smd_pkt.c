@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2010, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2008-2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -8,11 +8,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
  *
  */
 /*
@@ -40,10 +35,15 @@
 #include <mach/msm_smd.h>
 #include <mach/peripheral-loader.h>
 
-#include "modem_notifier.h"
 #include "smd_private.h"
+#ifdef CONFIG_ARCH_FSM9XXX
+#define NUM_SMD_PKT_PORTS 4
+#else
+#define NUM_SMD_PKT_PORTS 12
+#endif
 
-#define NUM_SMD_PKT_PORTS 11
+#define LOOPBACK_INX (NUM_SMD_PKT_PORTS - 1)
+
 #define DEVICE_NAME "smdpkt"
 
 struct smd_pkt_dev {
@@ -66,49 +66,91 @@ struct smd_pkt_dev {
 	int needed_space;
 	int is_open;
 	unsigned ch_size;
+	uint open_modem_wait;
 
-	struct notifier_block nb;
 	int has_reset;
-	struct mutex has_reset_lock;
+	int do_reset_notification;
 	struct completion ch_allocated;
 
 } *smd_pkt_devp[NUM_SMD_PKT_PORTS];
 
 struct class *smd_pkt_classp;
 static dev_t smd_pkt_number;
+static struct delayed_work loopback_work;
 static void check_and_wakeup_reader(struct smd_pkt_dev *smd_pkt_devp);
 static void check_and_wakeup_writer(struct smd_pkt_dev *smd_pkt_devp);
-static uint smd_pkt_modem_wait;
-module_param_named(modem_wait_timeout, smd_pkt_modem_wait,
-		   uint, S_IRUGO | S_IWUSR | S_IWGRP);
+static uint32_t is_modem_smsm_inited(void);
 
+static int msm_smd_pkt_debug_mask;
+module_param_named(debug_mask, msm_smd_pkt_debug_mask,
+		int, S_IRUGO | S_IWUSR | S_IWGRP);
 #define DEBUG
-#undef DEBUG
 
 #ifdef DEBUG
 #define D_DUMP_BUFFER(prestr, cnt, buf) \
 do { \
-	int i; \
-	printk(KERN_ERR "%s", prestr); \
-	for (i = 0; i < cnt; i++) \
-		printk(KERN_ERR "%.2x", buf[i]); \
-	printk(KERN_ERR "\n"); \
+	if (msm_smd_pkt_debug_mask) \
+		print_hex_dump(KERN_DEBUG, prestr, \
+				DUMP_PREFIX_NONE, 16, 1, \
+				buf, cnt, 1); \
 } while (0)
 #else
 #define D_DUMP_BUFFER(prestr, cnt, buf) do {} while (0)
 #endif
 
 #ifdef DEBUG
-#define D(x...) printk(x)
+#define D(x...) if (msm_smd_pkt_debug_mask) printk(x)
 #else
 #define D(x...) do {} while (0)
 #endif
 
+static ssize_t open_timeout_store(struct device *d,
+				  struct device_attribute *attr,
+				  const char *buf,
+				  size_t n)
+{
+	int i;
+	unsigned long tmp;
+	for (i = 0; i < NUM_SMD_PKT_PORTS; ++i) {
+		if (smd_pkt_devp[i]->devicep == d)
+			break;
+	}
+	if (!strict_strtoul(buf, 10, &tmp)) {
+		smd_pkt_devp[i]->open_modem_wait = tmp;
+		return n;
+	} else {
+		pr_err("%s: unable to convert: %s to an int\n", __func__,
+			buf);
+		return -EINVAL;
+	}
+}
+
+static ssize_t open_timeout_show(struct device *d,
+				 struct device_attribute *attr,
+				 char *buf)
+{
+	int i;
+	for (i = 0; i < NUM_SMD_PKT_PORTS; ++i) {
+		if (smd_pkt_devp[i]->devicep == d)
+			break;
+	}
+	return snprintf(buf, PAGE_SIZE, "%d\n",
+			smd_pkt_devp[i]->open_modem_wait);
+}
+
+static DEVICE_ATTR(open_timeout, 0664, open_timeout_show, open_timeout_store);
+
+static int notify_reset(struct smd_pkt_dev *smd_pkt_devp)
+{
+	smd_pkt_devp->do_reset_notification = 0;
+
+	return -ENETRESET;
+}
+
 static void clean_and_signal(struct smd_pkt_dev *smd_pkt_devp)
 {
-	mutex_lock(&smd_pkt_devp->has_reset_lock);
+	smd_pkt_devp->do_reset_notification = 1;
 	smd_pkt_devp->has_reset = 1;
-	mutex_unlock(&smd_pkt_devp->has_reset_lock);
 
 	smd_pkt_devp->is_open = 0;
 
@@ -117,38 +159,23 @@ static void clean_and_signal(struct smd_pkt_dev *smd_pkt_devp)
 	wake_up_interruptible(&smd_pkt_devp->ch_opened_wait_queue);
 }
 
-static int modem_notifier(struct notifier_block *this,
-			  unsigned long code,
-			  void *_cmd)
+static void loopback_probe_worker(struct work_struct *work)
 {
-	struct smd_pkt_dev *smd_pkt_devp =
-		container_of(this,
-			     struct smd_pkt_dev,
-			     nb);
 
-	if (!smd_pkt_devp)
-		return NOTIFY_DONE;
+	/* Wait for the modem SMSM to be inited for the SMD
+	** Loopback channel to be allocated at the modem. Since
+	** the wait need to be done atmost once, using msleep
+	** doesn't degrade the performance. */
+	if (!is_modem_smsm_inited())
+		schedule_delayed_work(&loopback_work, msecs_to_jiffies(1000));
+	else
+		smsm_change_state(SMSM_APPS_STATE,
+			  0, SMSM_SMD_LOOPBACK);
 
-	switch (code) {
-	case MODEM_NOTIFIER_START_RESET:
-		printk(KERN_ERR "Notify: start reset ch:%i\n",
-		       smd_pkt_devp->i);
-		clean_and_signal(smd_pkt_devp);
-		break;
-	case MODEM_NOTIFIER_END_RESET:
-		printk(KERN_ERR "Notify: end reset\n");
-		break;
-	default:
-		printk(KERN_ERR "Notify: general\n");
-		break;
-	}
-	return NOTIFY_DONE;
 }
 
-int smd_pkt_ioctl(struct inode *inode,
-		    struct file *file,
-		    unsigned int cmd,
-		    unsigned long arg)
+static long smd_pkt_ioctl(struct file *file, unsigned int cmd,
+					     unsigned long arg)
 {
 	int ret;
 	struct smd_pkt_dev *smd_pkt_devp;
@@ -192,6 +219,11 @@ ssize_t smd_pkt_read(struct file *file,
 	if (!smd_pkt_devp || !smd_pkt_devp->ch)
 		return -EINVAL;
 
+	if (smd_pkt_devp->do_reset_notification) {
+		/* notify client that a reset occurred */
+		return notify_reset(smd_pkt_devp);
+	}
+
 	chl = smd_pkt_devp->ch;
 wait_for_packet:
 	r = wait_event_interruptible(smd_pkt_devp->ch_read_wait_queue,
@@ -201,7 +233,7 @@ wait_for_packet:
 				     smd_pkt_devp->has_reset);
 
 	if (smd_pkt_devp->has_reset)
-		return -ENETRESET;
+		return notify_reset(smd_pkt_devp);
 
 	if (r < 0) {
 		/* qualify error message */
@@ -245,7 +277,7 @@ wait_for_packet:
 	    != bytes_read) {
 		mutex_unlock(&smd_pkt_devp->rx_lock);
 		if (smd_pkt_devp->has_reset)
-			return -ENETRESET;
+			return notify_reset(smd_pkt_devp);
 
 		printk(KERN_ERR "user read: not enough data?!\n");
 		return -EINVAL;
@@ -282,13 +314,18 @@ ssize_t smd_pkt_write(struct file *file,
 	if (count > smd_pkt_devp->ch_size)
 		return -EINVAL;
 
+	if (smd_pkt_devp->do_reset_notification) {
+		/* notify client that a reset occurred */
+		return notify_reset(smd_pkt_devp);
+	}
+
 	if (smd_pkt_devp->blocking_write) {
 		for (;;) {
 			mutex_lock(&smd_pkt_devp->tx_lock);
 			if (smd_pkt_devp->has_reset) {
 				smd_disable_read_intr(smd_pkt_devp->ch);
 				mutex_unlock(&smd_pkt_devp->tx_lock);
-				return -ENETRESET;
+				return notify_reset(smd_pkt_devp);
 			}
 			if (signal_pending(current)) {
 				smd_disable_read_intr(smd_pkt_devp->ch);
@@ -312,7 +349,7 @@ ssize_t smd_pkt_write(struct file *file,
 		smd_disable_read_intr(smd_pkt_devp->ch);
 		if (smd_pkt_devp->has_reset) {
 			mutex_unlock(&smd_pkt_devp->tx_lock);
-			return -ENETRESET;
+			return notify_reset(smd_pkt_devp);
 		}
 		if (signal_pending(current)) {
 			mutex_unlock(&smd_pkt_devp->tx_lock);
@@ -320,7 +357,7 @@ ssize_t smd_pkt_write(struct file *file,
 		}
 	} else {
 		if (smd_pkt_devp->has_reset)
-			return -ENETRESET;
+			return notify_reset(smd_pkt_devp);
 		if (signal_pending(current))
 			return -ERESTARTSYS;
 
@@ -341,7 +378,7 @@ ssize_t smd_pkt_write(struct file *file,
 	if (r != count) {
 		mutex_unlock(&smd_pkt_devp->tx_lock);
 		if (smd_pkt_devp->has_reset)
-			return -ENETRESET;
+			return notify_reset(smd_pkt_devp);
 
 		printk(KERN_ERR "ERROR:%s:%i:%s: "
 		       "smd_write(ch,buf,count = %i) ret %i.\n",
@@ -435,6 +472,8 @@ static void ch_notify(void *priv, unsigned event)
 	case SMD_EVENT_OPEN:
 		D(KERN_ERR "%s: smd opened\n",
 		  __func__);
+
+		smd_pkt_devp->has_reset = 0;
 		smd_pkt_devp->is_open = 1;
 		wake_up_interruptible(&smd_pkt_devp->ch_opened_wait_queue);
 		break;
@@ -442,10 +481,38 @@ static void ch_notify(void *priv, unsigned event)
 		smd_pkt_devp->is_open = 0;
 		printk(KERN_ERR "%s: smd closed\n",
 		       __func__);
+
+		/* put port into reset state */
+		clean_and_signal(smd_pkt_devp);
+		if (smd_pkt_devp->i == LOOPBACK_INX)
+			schedule_delayed_work(&loopback_work,
+					msecs_to_jiffies(1000));
 		break;
 	}
 }
 
+#ifdef CONFIG_ARCH_FSM9XXX
+static char *smd_pkt_dev_name[] = {
+	"smdcntl1",
+	"smdcntl2",
+	"smd22",
+	"smd_pkt_loopback",
+};
+
+static char *smd_ch_name[] = {
+	"DATA6_CNTL",
+	"DATA7_CNTL",
+	"DATA22",
+	"LOOPBACK",
+};
+
+static uint32_t smd_ch_edge[] = {
+	SMD_APPS_QDSP,
+	SMD_APPS_QDSP,
+	SMD_APPS_QDSP,
+	SMD_APPS_QDSP
+};
+#else
 static char *smd_pkt_dev_name[] = {
 	"smdcntl0",
 	"smdcntl1",
@@ -457,6 +524,7 @@ static char *smd_pkt_dev_name[] = {
 	"smdcntl7",
 	"smd22",
 	"smd_sns_dsps",
+	"apr_apps2",
 	"smd_pkt_loopback",
 };
 
@@ -471,6 +539,7 @@ static char *smd_ch_name[] = {
 	"DATA14_CNTL",
 	"DATA22",
 	"SENSOR",
+	"apr_apps2",
 	"LOOPBACK",
 };
 
@@ -485,15 +554,17 @@ static uint32_t smd_ch_edge[] = {
 	SMD_APPS_MODEM,
 	SMD_APPS_MODEM,
 	SMD_APPS_DSPS,
+	SMD_APPS_QDSP,
 	SMD_APPS_MODEM,
 };
+#endif
 
 static int smd_pkt_dummy_probe(struct platform_device *pdev)
 {
 	int i;
 
 	for (i = 0; i < NUM_SMD_PKT_PORTS; i++) {
-		if (!strcmp(pdev->name, smd_ch_name[i])) {
+		if (!strncmp(pdev->name, smd_ch_name[i], SMD_MAX_CH_NAME_LEN)) {
 			complete_all(&smd_pkt_devp[i]->ch_allocated);
 			break;
 		}
@@ -504,8 +575,10 @@ static int smd_pkt_dummy_probe(struct platform_device *pdev)
 static uint32_t is_modem_smsm_inited(void)
 {
 	uint32_t modem_state;
+	uint32_t ready_state = (SMSM_INIT | SMSM_SMDINIT);
+
 	modem_state = smsm_get_state(SMSM_MODEM_STATE);
-	return modem_state & SMSM_INIT;
+	return (modem_state & ready_state) == ready_state;
 }
 
 int smd_pkt_open(struct inode *inode, struct file *file)
@@ -526,9 +599,11 @@ int smd_pkt_open(struct inode *inode, struct file *file)
 
 		if (smd_ch_edge[smd_pkt_devp->i] == SMD_APPS_MODEM)
 			peripheral = "modem";
+		else if (smd_ch_edge[smd_pkt_devp->i] == SMD_APPS_QDSP)
+			peripheral = "q6";
 
 		if (peripheral) {
-			smd_pkt_devp->pil = pil_get("modem");
+			smd_pkt_devp->pil = pil_get(peripheral);
 			if (IS_ERR(smd_pkt_devp->pil)) {
 				r = PTR_ERR(smd_pkt_devp->pil);
 				goto out;
@@ -538,7 +613,8 @@ int smd_pkt_open(struct inode *inode, struct file *file)
 			** Loopback channel to be allocated at the modem. Since
 			** the wait need to be done atmost once, using msleep
 			** doesn't degrade the performance. */
-			if (!strcmp(smd_ch_name[smd_pkt_devp->i], "LOOPBACK")) {
+			if (!strncmp(smd_ch_name[smd_pkt_devp->i], "LOOPBACK",
+						SMD_MAX_CH_NAME_LEN)) {
 				if (!is_modem_smsm_inited())
 					msleep(5000);
 				smsm_change_state(SMSM_APPS_STATE,
@@ -550,10 +626,11 @@ int smd_pkt_open(struct inode *inode, struct file *file)
 			 * Wait for a packet channel to be allocated so we know
 			 * the modem is ready enough.
 			 */
-			if (smd_pkt_modem_wait) {
+			if (smd_pkt_devp->open_modem_wait) {
 				r = wait_for_completion_interruptible_timeout(
 					&smd_pkt_devp->ch_allocated,
-					msecs_to_jiffies(smd_pkt_modem_wait
+					msecs_to_jiffies(
+						smd_pkt_devp->open_modem_wait
 							 * 1000));
 				if (r == 0)
 					r = -ETIMEDOUT;
@@ -624,9 +701,8 @@ int smd_pkt_release(struct inode *inode, struct file *file)
 	}
 	mutex_unlock(&smd_pkt_devp->ch_lock);
 
-	mutex_lock(&smd_pkt_devp->has_reset_lock);
 	smd_pkt_devp->has_reset = 0;
-	mutex_unlock(&smd_pkt_devp->has_reset_lock);
+	smd_pkt_devp->do_reset_notification = 0;
 
 	return r;
 }
@@ -638,7 +714,7 @@ static const struct file_operations smd_pkt_fops = {
 	.read = smd_pkt_read,
 	.write = smd_pkt_write,
 	.poll = smd_pkt_poll,
-	.ioctl = smd_pkt_ioctl,
+	.unlocked_ioctl = smd_pkt_ioctl,
 };
 
 static int __init smd_pkt_init(void)
@@ -730,10 +806,10 @@ static int __init smd_pkt_init(void)
 			kfree(smd_pkt_devp[i]);
 			goto error2;
 		}
-
-		smd_pkt_devp[i]->nb.notifier_call = modem_notifier;
-		modem_register_notifier(&smd_pkt_devp[i]->nb);
-		mutex_init(&smd_pkt_devp[i]->has_reset_lock);
+		if (device_create_file(smd_pkt_devp[i]->devicep,
+					&dev_attr_open_timeout))
+			pr_err("%s: unable to create device attr on #%d\n",
+				__func__, i);
 
 		smd_pkt_devp[i]->driver.probe = smd_pkt_dummy_probe;
 		smd_pkt_devp[i]->driver.driver.name = smd_ch_name[i];
@@ -743,7 +819,9 @@ static int __init smd_pkt_init(void)
 			goto error2;
 	}
 
-	printk(KERN_INFO "SMD Packet Port Driver Initialized.\n");
+	INIT_DELAYED_WORK(&loopback_work, loopback_probe_worker);
+
+	D(KERN_INFO "SMD Packet Port Driver Initialized.\n");
 	return 0;
 
  error2:
@@ -770,7 +848,6 @@ static void __exit smd_pkt_cleanup(void)
 
 	for (i = 0; i < NUM_SMD_PKT_PORTS; ++i) {
 		platform_driver_unregister(&smd_pkt_devp[i]->driver);
-		modem_unregister_notifier(&smd_pkt_devp[i]->nb);
 		cdev_del(&smd_pkt_devp[i]->cdev);
 		kfree(smd_pkt_devp[i]);
 		device_destroy(smd_pkt_classp,

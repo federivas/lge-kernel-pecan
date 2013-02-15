@@ -22,13 +22,46 @@ and one of the functionality to be tethered networking which is being
 exposed over QMI using RmNet protocol. This usb gadget has one bulk-in,
 one bulk-out and one interrupt-in endpoint.
 
+Design:
+=======
+RmNet function driver design follows two approaches:
+
+Approach 1:
+-----------
+Single function driver is used to communicate with
+Modem(both for data and control). Most of the initial
+MSM targets are following this approach.
+
+The main disadvantage with this approach is there are
+multiple RmNet drivers for any change in DATA and Control
+Layer. There is no re-use in the code.
+
+Approach 2:
+-----------
+RmNet driver is divided into 3 components
+
+1. USB:
+This component has the functionality to deal with composite layer.
+Allocates Interfaces, Endpoints, listens to connect/disconnect
+interrupts and gives connect/disconnect notifications to DATA and
+CONTROL modules.
+
+2. Data:
+This component talks to modem to transfer IP data. Usually DATA
+and CONTROL go over same channel. However, to achieve higher
+data rates new transport channel for DATA may be used.
+
+3. Control:
+This component talks to modem to transfer rmnet control data.
+
 Software description
 ====================
-
-The RmNet uses two function drivers which uses one interface respectively
+The RmNet suports following data and control transports:
 as follows:
 	1. SMD Interface
 	2. SDIO Interface
+	3. BAM Interface
+	4. SMD Control Interface
 
 SMD interface uses the Shared memory for the RmNet driver to communicate
 with the MSM modem processor.
@@ -106,6 +139,25 @@ rmnet_data_rx_tlet
 rmnet_data_tx_tlet	-	Data transfer data reception and transmission handler
 
 
+SMD control interface
+----------------------
+This function driver implements exchnage of control informtion with
+modem over SMD. Uses smd_read/write commands to read or write rmnet
+ctrl packets. Exposes a call back function to usb component to write
+control packet and at the same time call a call back usb component
+callback to send data to usb host.
+
+Data structures and Interfaces are very similar to control interfaces
+explained in "SMD Interface"
+
+BAM MUX interface
+------------------
+BAM Mux interface is very similar to SDIO MUX interface. However there
+are differences in the way BAM and SDIO operate but all of the details
+are masked by MUX Driver.
+
+Refer to the SDIO interfaces for more information on data structures
+
 SDIO Interface:
 ---------------
 
@@ -140,6 +192,31 @@ read/write of a packet.  Based on these SMD/SDIO notifications all the
 pending read/write requests will be handled. Tasklets(SMD)/Workqueues(SDIO)
 are used to get the requests done.
 
-This driver doesn't expose any of its interfaces to either kernelspace
-or userspace.
+There is another variant of rmnet driver called rmnet_smd_sdio which is used
+on some boards.  This driver allows the transport (SMD/SDIO) to be chosen
+at runtime. This is required because either MDM processor or MODEM processor
+is only active at a time for data transfers. As SMD and SDIO interfaces
+are different, different endpoint completion handlers are used. This driver
+leverage the existing rmnet over smd and rmnet over sdio drivers. The control
+messages (QMI) always routed over SDIO. After the control messages exchange,
+user space will come to know about the available data transport (SMD/SDIO).
+User space notify the same to driver and the corresponding transport is
+activated. It is assumed that transport will not change while a USB cable
+is connected.
+
+Rmnet over SMD and rmnet over SDIO doesn't expose any of its interfaces to
+either kernelspace or userspace. But rmnet over smd/sdio expose a sysfs
+interface for userspace to notify the available transport to driver.
+
+The sysfs file can be found at
+/sys/class/usb_composite/rmnet_smd_sdio/transport
+
+The below command activates the SMD transport
+echo 0 > /sys/class/usb_composite/rmnet_smd_sdio/transport
+
+The below command activates the SDIO transport
+echo 1 > /sys/class/usb_composite/rmnet_smd_sdio/transport
+
+-EINVAL is returned if a write is attempted to transport when a USB cable
+is not connected.
 

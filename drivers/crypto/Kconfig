@@ -77,7 +77,7 @@ config ZCRYPT
 
 config ZCRYPT_MONOLITHIC
 	bool "Monolithic zcrypt module"
-	depends on ZCRYPT="m"
+	depends on ZCRYPT
 	help
 	  Select this option if you want to have a single module z90crypt,
 	  that contains all parts of the crypto device driver (ap bus,
@@ -172,6 +172,7 @@ config CRYPTO_DEV_MV_CESA
 
 config CRYPTO_DEV_NIAGARA2
        tristate "Niagara2 Stream Processing Unit driver"
+       select CRYPTO_DES
        select CRYPTO_ALGAPI
        depends on SPARC64
        help
@@ -243,6 +244,17 @@ config CRYPTO_DEV_OMAP_SHAM
 	  OMAP processors have SHA1/MD5 hw accelerator. Select this if you
 	  want to use the OMAP module for SHA1/MD5 algorithms.
 
+config CRYPTO_DEV_OMAP_AES
+	tristate "Support for OMAP AES hw engine"
+	depends on ARCH_OMAP2 || ARCH_OMAP3
+	select CRYPTO_AES
+	help
+	  OMAP processors have AES module accelerator. Select this if you
+	  want to use the OMAP module for AES algorithms.
+
+config CRYPTO_DEV_QCE40
+	bool
+
 config CRYPTO_DEV_QCRYPTO
 	tristate "Qualcomm Crypto accelerator"
 	select CRYPTO_DES
@@ -257,18 +269,29 @@ config CRYPTO_DEV_QCRYPTO
 
 config CRYPTO_DEV_QCE
 	tristate "Qualcomm Crypto Engine (QCE) module"
+	select  CRYPTO_DEV_QCE40 if ARCH_MSM8960
 	default n
 	help
-          This driver supports Qualcomm Crypto Engine in MSM7x30 MSM8660.
+          This driver supports Qualcomm Crypto Engine in MSM7x30 MSM8660
+	  MSM8x55 and MSM8960
 	  To compile this driver as a module, choose M here: the
-	  module will be called qce.
+	  For MSM7x30 MSM8660 and MSM8x55 the module is called qce
+	  For MSM8960 the module is called qce40
 
 config CRYPTO_DEV_QCEDEV
 	tristate "QCEDEV Interface to CE module"
 	default n
 	help
-          This driver supports Qualcomm QCEDEV Crypto in MSM7x30 MSM8660.
+          This driver supports Qualcomm QCEDEV Crypto in MSM7x30 MSM8660, MSM8960.
           This exposes the interface to the QCE hardware accelerator via IOCTLs
 	  To compile this driver as a module, choose M here: the
 	  module will be called qcedev.
+
+config CRYPTO_DEV_OTA_CRYPTO
+	tristate "OTA Crypto module"
+	help
+          This driver supports Qualcomm OTA Crypto in the FSM9xxx.
+	  To compile this driver as a module, choose M here: the
+	  module will be called ota_crypto.
+
 endif # CRYPTO_HW

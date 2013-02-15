@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -8,11 +8,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
  *
 */
 
@@ -27,8 +22,8 @@
 #include <linux/msm_audio_qcp.h>
 #include <asm/atomic.h>
 #include <asm/ioctls.h>
-#include <mach/qdsp6v2/apr_audio.h>
-#include <mach/qdsp6v2/q6asm.h>
+#include <sound/q6asm.h>
+#include <sound/apr_audio.h>
 #include "audio_utils.h"
 
 /* Buffer with meta*/
@@ -209,8 +204,8 @@ static int evrc_in_open(struct inode *inode, struct file *file)
 	audio = kzalloc(sizeof(struct q6audio_in), GFP_KERNEL);
 
 	if (audio == NULL) {
-		pr_err("%s:session id %d: Could not allocate memory for evrc\
-				driver\n", __func__, audio->ac->session);
+		pr_err("%s: Could not allocate memory for evrc\
+				driver\n", __func__);
 		return -ENOMEM;
 	}
 	/* Allocate memory for encoder config param */
@@ -250,8 +245,8 @@ static int evrc_in_open(struct inode *inode, struct file *file)
 				(void *)audio);
 
 	if (!audio->ac) {
-		pr_err("%s:session id %d: Could not allocate memory for audio\
-				client\n", __func__, audio->ac->session);
+		pr_err("%s: Could not allocate memory for audio\
+				client\n", __func__);
 		kfree(audio->enc_cfg);
 		kfree(audio);
 		return -ENOMEM;

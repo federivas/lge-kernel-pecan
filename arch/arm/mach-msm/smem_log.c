@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2010, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2008-2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -8,11 +8,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
  *
  */
 /*
@@ -64,7 +59,8 @@ do { \
 #define D(x...) do {} while (0)
 #endif
 
-#if defined(CONFIG_ARCH_MSM7X30) || defined(CONFIG_ARCH_MSM8X60)
+#if defined(CONFIG_ARCH_MSM7X30) || defined(CONFIG_ARCH_MSM8X60) \
+	|| defined(CONFIG_ARCH_FSM9XXX)
 #define TIMESTAMP_ADDR (MSM_TMR_BASE + 0x08)
 #else
 #define TIMESTAMP_ADDR (MSM_TMR_BASE + 0x04)
@@ -97,6 +93,8 @@ struct smem_log_item {
 static remote_spinlock_t remote_spinlock;
 static remote_spinlock_t remote_spinlock_static;
 static uint32_t smem_log_enable;
+static int smem_log_initialized;
+
 module_param_named(log_enable, smem_log_enable, int,
 		   S_IRUGO | S_IWUSR | S_IWGRP);
 
@@ -628,9 +626,13 @@ static inline unsigned int read_timestamp(void)
 {
 	unsigned int tick = 0;
 
+	/* no barriers necessary as the read value is a dependency for the
+	 * comparison operation so the processor shouldn't be able to
+	 * reorder things
+	 */
 	do {
-		tick = readl(TIMESTAMP_ADDR);
-	} while (tick != readl(TIMESTAMP_ADDR));
+		tick = __raw_readl(TIMESTAMP_ADDR);
+	} while (tick != __raw_readl(TIMESTAMP_ADDR));
 
 	return tick;
 }
@@ -681,7 +683,6 @@ static void smem_log_event_from_user(struct smem_log_inst *inst,
 		if (next_idx >= inst->num)
 			next_idx = 0;
 		*inst->idx = next_idx;
-
 		buf += sizeof(struct smem_log_item);
 	}
 
@@ -756,15 +757,17 @@ static void _smem_log_event6(
 
 	idx = *_idx;
 
+	/* FIXME: Wrap around */
 	if (idx < (num-1)) {
 		memcpy(&events[idx],
-		       &item, sizeof(item));
+			&item, sizeof(item));
 	}
 
 	next_idx = idx + 2;
 	if (next_idx >= num)
 		next_idx = 0;
 	*_idx = next_idx;
+
 	wmb();
 	remote_spin_unlock_irqrestore(lock, flags);
 }
@@ -865,19 +868,19 @@ static int _smem_log_init(void)
 	ret = remote_spin_lock_init(&remote_spinlock,
 			      SMEM_SPINLOCK_SMEM_LOG);
 	if (ret) {
-		dsb();
+		mb();
 		return ret;
 	}
 
 	ret = remote_spin_lock_init(&remote_spinlock_static,
 			      SMEM_SPINLOCK_STATIC_LOG);
 	if (ret) {
-		dsb();
+		mb();
 		return ret;
 	}
 
 	init_syms();
-	dsb();
+	mb();
 
 	return 0;
 }
@@ -890,19 +893,19 @@ static ssize_t smem_log_read_bin(struct file *fp, char __user *buf,
 	unsigned long flags;
 	int ret;
 	int tot_bytes = 0;
-	struct smem_log_inst *inst;
+	struct smem_log_inst *local_inst;
 
-	inst = fp->private_data;
+	local_inst = fp->private_data;
 
-	remote_spin_lock_irqsave(inst->remote_spinlock, flags);
+	remote_spin_lock_irqsave(local_inst->remote_spinlock, flags);
 
-	orig_idx = *inst->idx;
+	orig_idx = *local_inst->idx;
 	idx = orig_idx;
 
 	while (1) {
 		idx--;
 		if (idx < 0)
-			idx = inst->num - 1;
+			idx = local_inst->num - 1;
 		if (idx == orig_idx) {
 			ret = tot_bytes;
 			break;
@@ -913,7 +916,7 @@ static ssize_t smem_log_read_bin(struct file *fp, char __user *buf,
 			break;
 		}
 
-		ret = copy_to_user(buf, &inst[GEN].events[idx],
+		ret = copy_to_user(buf, &local_inst->events[idx],
 				   sizeof(struct smem_log_item));
 		if (ret) {
 			ret = -EIO;
@@ -925,7 +928,7 @@ static ssize_t smem_log_read_bin(struct file *fp, char __user *buf,
 		buf += sizeof(struct smem_log_item);
 	}
 
-	remote_spin_unlock_irqrestore(inst->remote_spinlock, flags);
+	remote_spin_unlock_irqrestore(local_inst->remote_spinlock, flags);
 
 	return ret;
 }
@@ -1091,8 +1094,8 @@ static int smem_log_release(struct inode *ip, struct file *fp)
 	return 0;
 }
 
-static int smem_log_ioctl(struct inode *ip, struct file *fp,
-			  unsigned int cmd, unsigned long arg);
+static long smem_log_ioctl(struct file *fp, unsigned int cmd,
+					   unsigned long arg);
 
 static const struct file_operations smem_log_fops = {
 	.owner = THIS_MODULE,
@@ -1100,7 +1103,7 @@ static const struct file_operations smem_log_fops = {
 	.write = smem_log_write,
 	.open = smem_log_open,
 	.release = smem_log_release,
-	.ioctl = smem_log_ioctl,
+	.unlocked_ioctl = smem_log_ioctl,
 };
 
 static const struct file_operations smem_log_bin_fops = {
@@ -1109,16 +1112,12 @@ static const struct file_operations smem_log_bin_fops = {
 	.write = smem_log_write_bin,
 	.open = smem_log_open,
 	.release = smem_log_release,
-	.ioctl = smem_log_ioctl,
+	.unlocked_ioctl = smem_log_ioctl,
 };
 
-static int smem_log_ioctl(struct inode *ip, struct file *fp,
+static long smem_log_ioctl(struct file *fp,
 			  unsigned int cmd, unsigned long arg)
 {
-	struct smem_log_inst *inst;
-
-	inst = fp->private_data;
-
 	switch (cmd) {
 	default:
 		return -ENOTTY;
@@ -1135,12 +1134,19 @@ static int smem_log_ioctl(struct inode *ip, struct file *fp,
 		}
 		break;
 	case SMIOC_SETLOG:
-		if (arg == SMIOC_LOG)
-			fp->private_data = &inst[GEN];
-		else if (arg == SMIOC_STATIC_LOG)
-			fp->private_data = &inst[STA];
-		else
+		if (arg == SMIOC_LOG) {
+			if (inst[GEN].events)
+				fp->private_data = &inst[GEN];
+			else
+				return -ENODEV;
+		} else if (arg == SMIOC_STATIC_LOG) {
+			if (inst[STA].events)
+				fp->private_data = &inst[STA];
+			else
+				return -ENODEV;
+		} else {
 			return -EINVAL;
+		}
 		break;
 	}
 
@@ -1922,6 +1928,7 @@ static int smem_log_initialize(void)
 	}
 
 	smem_log_enable = 1;
+	smem_log_initialized = 1;
 	smem_log_debugfs_init();
 	return ret;
 }
@@ -1932,7 +1939,8 @@ static int modem_notifier(struct notifier_block *this,
 {
 	switch (code) {
 	case MODEM_NOTIFIER_SMSM_INIT:
-		smem_log_initialize();
+		if (!smem_log_initialized)
+			smem_log_initialize();
 		break;
 	default:
 		break;

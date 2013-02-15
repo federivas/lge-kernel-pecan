@@ -9,11 +9,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
- *
  */
 
 #include <linux/slab.h>
@@ -42,7 +37,7 @@ static int sizes[MAX_TEST_BUFFERS];
 
 /* Anything that allocates or deallocates buffers must lock with this
  * mutex. */
-static DECLARE_MUTEX(buffer_lock);
+static DEFINE_SEMAPHORE(buffer_lock);
 
 /* Each buffer has a semaphore associated with it that will be held
  * for the duration of any operations on that buffer.  It also must be
@@ -145,7 +140,7 @@ static int dma_scopy(struct msm_dma_scopy *scopy, struct private *priv)
 					sizeof(*priv->command_ptr_ptr),
 					DMA_TO_DEVICE);
 
-	msm_dmov_exec_cmd(TEST_CHANNEL, 0,
+	msm_dmov_exec_cmd(TEST_CHANNEL,
 			  DMOV_CMD_PTR_LIST | DMOV_CMD_ADDR(mapped_cmd_ptr));
 
 	dma_unmap_single(NULL, (dma_addr_t) mapped_cmd_ptr,
@@ -175,7 +170,7 @@ static int dma_test_open(struct inode *inode, struct file *file)
 		return -ENOMEM;
 	file->private_data = priv;
 
-	init_MUTEX(&priv->sem);
+	sema_init(&priv->sem, 1);
 
 	/* Note, that these should be allocated together so we don't
 	 * waste 32 bytes for each. */
@@ -216,8 +211,7 @@ static int dma_test_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static int dma_test_ioctl(struct inode *inode, struct file *file,
-			  unsigned cmd, unsigned long arg)
+static long dma_test_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 {
 	int err = 0;
 	int tmp;
@@ -325,7 +319,7 @@ static int dma_test_ioctl(struct inode *inode, struct file *file,
 
 static const struct file_operations dma_test_fops = {
 	.owner = THIS_MODULE,
-	.ioctl = dma_test_ioctl,
+	.unlocked_ioctl = dma_test_ioctl,
 	.open = dma_test_open,
 	.release = dma_test_release,
 };
@@ -344,7 +338,7 @@ static int dma_test_init(void)
 		return ret;
 
 	for (i = 0; i < MAX_TEST_BUFFERS; i++)
-		init_MUTEX(&buffer_sems[i]);
+		sema_init(&buffer_sems[i], 1);
 
 	printk(KERN_ALERT "%s, minor number %d\n", __func__, dma_test_dev.minor);
 	return 0;

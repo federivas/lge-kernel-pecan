@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -8,11 +8,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
  */
 
 #include <linux/module.h>
@@ -23,6 +18,7 @@
 #include <linux/debugfs.h>
 #include <linux/elf.h>
 #include <linux/mutex.h>
+#include <linux/memblock.h>
 
 #include <asm/uaccess.h>
 #include <asm/setup.h>
@@ -56,31 +52,6 @@ static struct pil_device *find_peripheral(const char *str)
 	return dev;
 }
 
-static int segment_in_hole(unsigned long start, unsigned long end)
-{
-	struct meminfo *mi = &meminfo;
-	unsigned int i;
-	struct membank *bank;
-
-	if (start >= end)
-		return 0;
-
-	if (end < bank_phys_start(&mi->bank[0]))
-		return 1;
-
-	for (i = 0; i < mi->nr_banks - 1; i++) {
-		bank = &mi->bank[i];
-		if (start >= bank_phys_end(bank) &&
-				end < bank_phys_start(&mi->bank[i+1]))
-			return 1;
-	}
-
-	if (start >= bank_phys_end(&mi->bank[i]))
-		return 1;
-
-	return 0;
-}
-
 #define IOMAP_SIZE SZ_4M
 
 static int load_segment(const struct elf32_phdr *phdr, unsigned num,
@@ -91,8 +62,8 @@ static int load_segment(const struct elf32_phdr *phdr, unsigned num,
 	const struct firmware *fw = NULL;
 	const u8 *data;
 
-	if (!segment_in_hole(phdr->p_paddr, phdr->p_paddr + phdr->p_memsz)) {
-		dev_err(&pil->pdev.dev, "Kernel memory would be overwritten\n");
+	if (memblock_is_region_memory(phdr->p_paddr, phdr->p_memsz)) {
+		dev_err(&pil->pdev.dev, "Kernel memory would be overwritten");
 		return -EPERM;
 	}
 
@@ -158,7 +129,7 @@ static int load_segment(const struct elf32_phdr *phdr, unsigned num,
 		paddr += size;
 	}
 
-	ret = pil->ops->verify_blob(phdr->p_paddr, phdr->p_memsz);
+	ret = pil->ops->verify_blob(pil, phdr->p_paddr, phdr->p_memsz);
 	if (ret)
 		dev_err(&pil->pdev.dev, "Blob %u failed verification\n", num);
 
@@ -207,19 +178,20 @@ static int load_image(struct pil_device *pil)
 		ret = -EIO;
 		goto release_fw;
 	}
-	if (ehdr->e_phoff > fw->size) {
-		dev_err(&pil->pdev.dev, "Program header beyond size of mdt\n");
+	if (sizeof(struct elf32_phdr) * ehdr->e_phnum +
+	    sizeof(struct elf32_hdr) > fw->size) {
+		dev_err(&pil->pdev.dev, "Program headers not within mdt\n");
 		ret = -EIO;
 		goto release_fw;
 	}
 
-	ret = pil->ops->init_image(fw->data, fw->size);
+	ret = pil->ops->init_image(pil, fw->data, fw->size);
 	if (ret) {
 		dev_err(&pil->pdev.dev, "Invalid firmware metadata\n");
 		goto release_fw;
 	}
 
-	phdr = (const struct elf32_phdr *)(fw->data + ehdr->e_phoff);
+	phdr = (const struct elf32_phdr *)(fw->data + sizeof(struct elf32_hdr));
 	for (i = 0; i < ehdr->e_phnum; i++, phdr++) {
 		if (!segment_is_loadable(phdr))
 			continue;
@@ -232,7 +204,7 @@ static int load_image(struct pil_device *pil)
 		}
 	}
 
-	ret = pil->ops->auth_and_reset();
+	ret = pil->ops->auth_and_reset(pil);
 	if (ret) {
 		dev_err(&pil->pdev.dev, "Failed to bring out of reset\n");
 		goto release_fw;
@@ -301,10 +273,8 @@ void pil_put(void *peripheral_handle)
 {
 	struct pil_device *pil_d;
 	struct pil_device *pil = peripheral_handle;
-	if (!pil || IS_ERR(pil)) {
-		WARN(1, "Invalid peripheral handle\n");
+	if (!pil || IS_ERR(pil))
 		return;
-	}
 
 	mutex_lock(&pil->lock);
 	WARN(!pil->count, "%s: Reference count mismatch\n", __func__);
@@ -314,7 +284,7 @@ void pil_put(void *peripheral_handle)
 	if (pil->count)
 		pil->count--;
 	if (pil->count == 0)
-		pil->ops->shutdown();
+		pil->ops->shutdown(pil);
 unlock:
 	mutex_unlock(&pil->lock);
 
@@ -324,9 +294,24 @@ unlock:
 }
 EXPORT_SYMBOL(pil_put);
 
-int pil_force_reset(const char *name)
+void pil_force_shutdown(const char *name)
 {
-	int ret = 0;
+	struct pil_device *pil;
+
+	pil = find_peripheral(name);
+	if (!pil)
+		return;
+
+	mutex_lock(&pil->lock);
+	if (!WARN(!pil->count, "%s: Reference count mismatch\n", __func__))
+		pil->ops->shutdown(pil);
+	mutex_unlock(&pil->lock);
+}
+EXPORT_SYMBOL(pil_force_shutdown);
+
+int pil_force_boot(const char *name)
+{
+	int ret = -EINVAL;
 	struct pil_device *pil;
 
 	pil = find_peripheral(name);
@@ -334,14 +319,13 @@ int pil_force_reset(const char *name)
 		return -EINVAL;
 
 	mutex_lock(&pil->lock);
-	if (pil->count) {
-		pil->ops->shutdown();
+	if (!WARN(!pil->count, "%s: Reference count mismatch\n", __func__))
 		ret = load_image(pil);
-	}
 	mutex_unlock(&pil->lock);
+
 	return ret;
 }
-EXPORT_SYMBOL(pil_force_reset);
+EXPORT_SYMBOL(pil_force_boot);
 
 #ifdef CONFIG_DEBUG_FS
 int msm_pil_debugfs_open(struct inode *inode, struct file *filp)
@@ -426,7 +410,7 @@ static int msm_pil_shutdown_at_boot(void)
 
 	mutex_lock(&pil_list_lock);
 	list_for_each_entry(pil, &pil_list, list)
-		pil->ops->shutdown();
+		pil->ops->shutdown(pil);
 	mutex_unlock(&pil_list_lock);
 
 	return 0;

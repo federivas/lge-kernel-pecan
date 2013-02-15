@@ -362,7 +362,8 @@ static int ab3100_get_best_voltage_index(struct regulator_dev *reg,
 }
 
 static int ab3100_set_voltage_regulator(struct regulator_dev *reg,
-					int min_uV, int max_uV)
+					int min_uV, int max_uV,
+					unsigned *selector)
 {
 	struct ab3100_regulator *abreg = reg->reg_data;
 	u8 regval;
@@ -372,6 +373,8 @@ static int ab3100_set_voltage_regulator(struct regulator_dev *reg,
 	bestindex = ab3100_get_best_voltage_index(reg, min_uV, max_uV);
 	if (bestindex < 0)
 		return bestindex;
+
+	*selector = bestindex;
 
 	err = abx500_get_register_interruptible(abreg->dev, 0,
 						abreg->regreg, &regval);
@@ -634,12 +637,9 @@ static int __devinit ab3100_regulators_probe(struct platform_device *pdev)
 				"%s: failed to register regulator %s err %d\n",
 				__func__, ab3100_regulator_desc[i].name,
 				err);
-			i--;
 			/* remove the already registered regulators */
-			while (i > 0) {
+			while (--i >= 0)
 				regulator_unregister(ab3100_regulators[i].rdev);
-				i--;
-			}
 			return err;
 		}
 

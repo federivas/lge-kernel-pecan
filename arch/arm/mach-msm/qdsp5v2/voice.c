@@ -9,11 +9,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
- *
  */
 
 #include <linux/kernel.h>
@@ -117,6 +112,10 @@ static void voice_auddev_cb_function(u32 evt_id,
 				v->dev_state = DEV_READY;
 				MM_DBG("dev_state into ready\n");
 				wake_up(&v->dev_wait);
+			}
+			if (v->voc_state == VOICE_CHANGE) {
+				MM_DBG("voc_state is in VOICE_CHANGE\n");
+				v->voc_state = VOICE_ACQUIRE;
 			}
 		}
 		break;

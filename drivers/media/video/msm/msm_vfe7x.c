@@ -9,11 +9,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
- *
  */
 
 #include <linux/msm_adsp.h>
@@ -43,10 +38,12 @@
 #define MSG_OUTPUT2   7
 #define MSG_STATS_AF  8
 #define MSG_STATS_WE  9
+#define MSG_OUTPUT_S  10
+#define MSG_OUTPUT_T  11
 
 #define VFE_ADSP_EVENT 0xFFFF
 #define SNAPSHOT_MASK_MODE 0x00000002
-#define MSM_AXI_QOS_PREVIEW		192000
+#define MSM_AXI_QOS_PREVIEW	192000
 #define MSM_AXI_QOS_SNAPSHOT	192000
 
 
@@ -59,9 +56,15 @@ static uint32_t extlen;
 struct mutex vfe_lock;
 static void     *vfe_syncdata;
 static uint8_t vfestopped;
-static struct stop_event stopevent;
 static uint32_t vfetask_state;
 static int cnt;
+
+static struct stop_event stopevent;
+
+unsigned long paddr_s_y;
+unsigned long paddr_s_cbcr;
+unsigned long paddr_t_y;
+unsigned long paddr_t_cbcr;
 
 static void vfe_7x_convert(struct msm_vfe_phy_info *pinfo,
 		enum vfe_resp_msg type,
@@ -92,6 +95,24 @@ static void vfe_7x_convert(struct msm_vfe_phy_info *pinfo,
 
 		*ext  = extdata;
 		*elen = extlen;
+	}
+		break;
+
+	case VFE_MSG_OUTPUT_S: {
+		pinfo->y_phy = paddr_s_y;
+		pinfo->cbcr_phy = paddr_s_cbcr;
+		pinfo->output_id = OUTPUT_TYPE_S;
+		CDBG("vfe_7x_convert: y_phy = 0x%x cbcr_phy = 0x%x\n",
+					pinfo->y_phy, pinfo->cbcr_phy);
+	}
+		break;
+
+	case VFE_MSG_OUTPUT_T: {
+		pinfo->y_phy = paddr_t_y;
+		pinfo->cbcr_phy = paddr_t_cbcr;
+		pinfo->output_id = OUTPUT_TYPE_T;
+		CDBG("vfe_7x_convert: y_phy = 0x%x cbcr_phy = 0x%x\n",
+					pinfo->y_phy, pinfo->cbcr_phy);
 	}
 		break;
 
@@ -144,7 +165,23 @@ static void vfe_7x_ops(void *driver_data, unsigned id, size_t len,
 		switch (rp->evt_msg.msg_id) {
 		case MSG_SNAPSHOT:
 			update_axi_qos(MSM_AXI_QOS_PREVIEW);
+			vfe_7x_ops(driver_data, MSG_OUTPUT_S, len, getevent);
+			vfe_7x_ops(driver_data, MSG_OUTPUT_T, len, getevent);
 			rp->type = VFE_MSG_SNAPSHOT;
+			break;
+
+		case MSG_OUTPUT_S:
+			rp->type = VFE_MSG_OUTPUT_S;
+			vfe_7x_convert(&(rp->phy), VFE_MSG_OUTPUT_S,
+				rp->evt_msg.data, &(rp->extdata),
+				&(rp->extlen));
+			break;
+
+		case MSG_OUTPUT_T:
+			rp->type = VFE_MSG_OUTPUT_T;
+			vfe_7x_convert(&(rp->phy), VFE_MSG_OUTPUT_T,
+				rp->evt_msg.data, &(rp->extdata),
+				&(rp->extlen));
 			break;
 
 		case MSG_OUTPUT1:
@@ -264,15 +301,9 @@ static void vfe_7x_release(struct platform_device *pdev)
 	kfree(extdata);
 	extlen = 0;
 
-	/* set back the AXI frequency to default */
-//LGE_DEV_PORTING 
-// sleep current issue : Case Number:  00479707
-//update_axi_qos(PM_QOS_DEFAULT_VALUE);
-	if (cnt) {
-		release_axi_qos();                     
-		cnt = 0;
-	}
-//LGE_DEV_END
+	/* Release AXI */
+	release_axi_qos();
+	cnt = 0;
 }
 
 static int vfe_7x_init(struct msm_vfe_callback *presp,
@@ -340,6 +371,11 @@ static int vfe_7x_config_axi(int mode,
 		regptr = ad->region;
 
 		CDBG("bufnum1 = %d\n", ad->bufnum1);
+		if (mode == OUTPUT_1_AND_2) {
+			paddr_t_y = regptr->paddr + regptr->info.y_off;
+			paddr_t_cbcr = regptr->paddr +  regptr->info.cbcr_off;
+		}
+
 		CDBG("config_axi1: O1, phy = 0x%lx, y_off = %d, cbcr_off =%d\n",
 			regptr->paddr, regptr->info.y_off,
 			regptr->info.cbcr_off);
@@ -367,6 +403,8 @@ static int vfe_7x_config_axi(int mode,
 		regptr = &(ad->region[ad->bufnum1]);
 
 		CDBG("bufnum2 = %d\n", ad->bufnum2);
+		paddr_s_y = regptr->paddr +  regptr->info.y_off;
+		paddr_s_cbcr = regptr->paddr +  regptr->info.cbcr_off;
 		CDBG("config_axi2: O2, phy = 0x%lx, y_off = %d, cbcr_off =%d\n",
 		     regptr->paddr, regptr->info.y_off, regptr->info.cbcr_off);
 

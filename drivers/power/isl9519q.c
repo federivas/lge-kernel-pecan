@@ -1,4 +1,4 @@
-/* Copyright (c) 2010 Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -8,11 +8,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
  *
  */
 
@@ -27,7 +22,7 @@
 #include <linux/msm-charger.h>
 #include <linux/slab.h>
 #include <linux/i2c/isl9519.h>
-#include <linux/m_adc.h>
+#include <linux/msm_adc.h>
 
 #define CHG_CURRENT_REG		0x14
 #define MAX_SYS_VOLTAGE_REG	0x15
@@ -42,21 +37,21 @@
 #define ISL9519_CHG_PERIOD	((HZ) * 150)
 
 struct isl9519q_struct {
-	struct i2c_client *client;
-	struct delayed_work charge_work;
-
-	int present;
-	int batt_present;
-	bool charging;
-	int chgcurrent;
-	int term_current;
-	int max_system_voltage;
-	int min_system_voltage;
-
-	int valid_n_gpio;
-	struct dentry *dent;
-
-	struct msm_hardware_charger adapter_hw_chg;
+	struct i2c_client		*client;
+	struct delayed_work		charge_work;
+	int				present;
+	int				batt_present;
+	bool				charging;
+	int				chgcurrent;
+	int				term_current;
+	int				input_current;
+	int				max_system_voltage;
+	int				min_system_voltage;
+	int				valid_n_gpio;
+	struct dentry			*dent;
+	struct msm_hardware_charger	adapter_hw_chg;
+	int				suspended;
+	int				charge_at_resume;
 };
 
 static int isl9519q_read_reg(struct i2c_client *client, int reg,
@@ -199,6 +194,11 @@ static int isl9519q_start_charging(struct msm_hardware_charger *hw_chg,
 		/* we are already charging */
 		return 0;
 
+	if (isl_chg->suspended) {
+		isl_chg->charge_at_resume = 1;
+		return 0;
+	}
+
 	dev_dbg(&isl_chg->client->dev, "%s\n", __func__);
 
 	ret = isl9519q_write_reg(isl_chg->client, CHG_CURRENT_REG,
@@ -228,6 +228,11 @@ static int isl9519q_stop_charging(struct msm_hardware_charger *hw_chg)
 	if (!(isl_chg->charging))
 		/* we arent charging */
 		return 0;
+
+	if (isl_chg->suspended) {
+		isl_chg->charge_at_resume = 0;
+		return 0;
+	}
 
 	dev_dbg(&isl_chg->client->dev, "%s\n", __func__);
 
@@ -323,12 +328,14 @@ static int __devinit isl9519q_probe(struct i2c_client *client,
 	isl_chg->client = client;
 	isl_chg->chgcurrent = pdata->chgcurrent;
 	isl_chg->term_current = pdata->term_current;
+	isl_chg->input_current = pdata->input_current;
 	isl_chg->max_system_voltage = pdata->max_system_voltage;
 	isl_chg->min_system_voltage = pdata->min_system_voltage;
 	isl_chg->valid_n_gpio = pdata->valid_n_gpio;
 
-	/* h/w ignores lower 7 bits of charging current */
+	/* h/w ignores lower 7 bits of charging current and input current */
 	isl_chg->chgcurrent &= ~0x7F;
+	isl_chg->input_current &= ~0x7F;
 
 	isl_chg->adapter_hw_chg.type = CHG_TYPE_AC;
 	isl_chg->adapter_hw_chg.rating = 2;
@@ -400,6 +407,18 @@ static int __devinit isl9519q_probe(struct i2c_client *client,
 		goto free_irq;
 	}
 
+	if (isl_chg->input_current) {
+		ret = isl9519q_write_reg(isl_chg->client,
+				INPUT_CURRENT_REG,
+				isl_chg->input_current);
+		if (ret) {
+			dev_err(&client->dev,
+				"%s couldnt write INPUT_CURRENT_REG ret=%d\n",
+				__func__, ret);
+			goto free_irq;
+		}
+	}
+
 	ret = gpio_get_value_cansleep(isl_chg->valid_n_gpio);
 	if (ret < 0) {
 		dev_err(&client->dev,
@@ -420,7 +439,7 @@ static int __devinit isl9519q_probe(struct i2c_client *client,
 free_irq:
 	free_irq(client->irq, NULL);
 unregister:
-	msm_charger_register(&isl_chg->adapter_hw_chg);
+	msm_charger_unregister(&isl_chg->adapter_hw_chg);
 free_gpio:
 	gpio_free(pdata->valid_n_gpio);
 free_isl_chg:
@@ -461,6 +480,8 @@ static int isl9519q_suspend(struct device *dev)
 	 */
 	if (isl_chg->charging)
 		return -EBUSY;
+
+	isl_chg->suspended  = 1;
 	return 0;
 }
 
@@ -469,6 +490,11 @@ static int isl9519q_resume(struct device *dev)
 	struct isl9519q_struct *isl_chg = dev_get_drvdata(dev);
 
 	dev_dbg(&isl_chg->client->dev, "%s\n", __func__);
+	isl_chg->suspended  = 0;
+	if (isl_chg->charge_at_resume) {
+		isl_chg->charge_at_resume = 0;
+		isl9519q_start_charging(&isl_chg->adapter_hw_chg, 0, 0);
+	}
 	return 0;
 }
 

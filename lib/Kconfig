@@ -7,6 +7,9 @@ config BINARY_PRINTF
 
 menu "Library routines"
 
+config RAID6_PQ
+	tristate
+
 config BITREVERSE
 	tristate
 
@@ -102,8 +105,6 @@ config LZO_COMPRESS
 
 config LZO_DECOMPRESS
 	tristate
-
-
 
 source "lib/xz/Kconfig"
 
@@ -214,5 +215,8 @@ config GENERIC_ATOMIC64
 
 config LRU_CACHE
 	tristate
+
+config AVERAGE
+	bool
 
 endmenu

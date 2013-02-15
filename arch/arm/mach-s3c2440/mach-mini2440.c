@@ -506,6 +506,11 @@ static struct i2c_board_info mini2440_i2c_devs[] __initdata = {
 	},
 };
 
+static struct platform_device uda1340_codec = {
+		.name = "uda134x-codec",
+		.id = -1,
+};
+
 static struct platform_device *mini2440_devices[] __initdata = {
 	&s3c_device_ohci,
 	&s3c_device_wdt,
@@ -521,7 +526,9 @@ static struct platform_device *mini2440_devices[] __initdata = {
 	&s3c_device_nand,
 	&s3c_device_sdi,
 	&s3c_device_iis,
+	&uda1340_codec,
 	&mini2440_audio,
+	&samsung_asoc_dma,
 };
 
 static void __init mini2440_map_io(void)
@@ -691,8 +698,6 @@ static void __init mini2440_init(void)
 
 MACHINE_START(MINI2440, "MINI2440")
 	/* Maintainer: Michel Pollet <buserror@gmail.com> */
-	.phys_io	= S3C2410_PA_UART,
-	.io_pg_offst	= (((u32)S3C24XX_VA_UART) >> 18) & 0xfffc,
 	.boot_params	= S3C2410_SDRAM_PA + 0x100,
 	.map_io		= mini2440_map_io,
 	.init_machine	= mini2440_init,

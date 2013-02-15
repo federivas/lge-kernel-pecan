@@ -9,11 +9,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
- *
  */
 /*
  * Qualcomm PMIC8058 Thermal Manager driver
@@ -29,7 +24,7 @@
 #include <linux/mfd/pmic8058.h>
 #include <linux/completion.h>
 
-#include <linux/m_adc.h>
+#include <linux/msm_adc.h>
 
 /* PMIC8058 TEMP_ALRM registers */
 #define	SSBI_REG_TEMP_ALRM_CTRL		0x1B

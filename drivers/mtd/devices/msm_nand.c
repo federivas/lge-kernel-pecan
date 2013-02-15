@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2007 Google, Inc.
- * Copyright (c) 2008-2010, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2008-2011, Code Aurora Forum. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -40,14 +40,11 @@ unsigned long msm_nandc11_phys;
 unsigned long ebi2_register_base;
 uint32_t dual_nand_ctlr_present;
 uint32_t interleave_enable;
-unsigned crci_mask;
+uint32_t enable_bch_ecc;
 
 #define MSM_NAND_DMA_BUFFER_SIZE SZ_8K
 #define MSM_NAND_DMA_BUFFER_SLOTS \
 	(MSM_NAND_DMA_BUFFER_SIZE / (sizeof(((atomic_t *)0)->counter) * 8))
-
-#define MSM_NAND_CFG0_RAW 0xA80420C0
-#define MSM_NAND_CFG1_RAW 0x5045D
 
 #define MSM_NAND_CFG0_RAW_ONFI_IDENTIFIER 0x88000800
 #define MSM_NAND_CFG0_RAW_ONFI_PARAM_INFO 0x88040000
@@ -74,8 +71,11 @@ struct msm_nand_chip {
 	unsigned dma_channel;
 	uint8_t *dma_buffer;
 	dma_addr_t dma_addr;
-	unsigned CFG0, CFG1;
+	unsigned CFG0, CFG1, CFG0_RAW, CFG1_RAW;
 	uint32_t ecc_buf_cfg;
+	uint32_t ecc_bch_cfg;
+	uint32_t ecc_parity_bytes;
+	unsigned cw_size;
 };
 
 #define CFG1_WIDE_FLASH (1U << 1)
@@ -126,6 +126,48 @@ static struct nand_ecclayout msm_nand_oob_128 = {
 	.oobavail	= 32,
 	.oobfree	= {
 		{70, 32},
+	}
+};
+
+/**
+ * msm_nand_oob_224 - oob info for 4KB page 8Bit interface
+ */
+static struct nand_ecclayout msm_nand_oob_224_x8 = {
+	.eccbytes	= 104,
+	.eccpos		= {
+		  0,   1,   2,   3,   4,   5,   6,   7,   8,   9,  10,  11,  12,
+		 13,  14,  15,  16,  17,  18,  19,  20,  21,  22,  23,  24,  25,
+		 26,  27,  28,  29,  30,  31,  32,  33,  34,  35,  36,  37,  38,
+		 39,  40,  41,  42,  43,  44,  45,  46,  47,  48,  49,  50,  51,
+		 52,  53,  54,  55,  56,  57,  58,  59,	 60,  61,  62,  63,  64,
+		 65,  66,  67,  68,  69,  70,  71,  72,  73,  74,  75,  76,  77,
+		 78,  79,  80,  81,  82,  83,  84,  85,  86,  87,  88,  89,  90,
+		123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135,
+		},
+	.oobavail	= 32,
+	.oobfree	= {
+		{91, 32},
+	}
+};
+
+/**
+ * msm_nand_oob_224 - oob info for 4KB page 16Bit interface
+ */
+static struct nand_ecclayout msm_nand_oob_224_x16 = {
+	.eccbytes	= 112,
+	.eccpos		= {
+	  0,   1,   2,   3,   4,   5,   6,   7,   8,   9,  10,  11,  12,  13,
+	 14,  15,  16,  17,  18,  19,  20,  21,  22,  23,  24,  25,  26,  27,
+	 28,  29,  30,  31,  32,  33,  34,  35,  36,  37,  38,  39,  40,  41,
+	 42,  43,  44,  45,  46,  47,  48,  49,  50,  51,  52,  53,  54,  55,
+	 56,  57,  58,  59,  60,  61,  62,  63,  64,  65,  66,  67,  68,  69,
+	 70,  71,  72,  73,  74,  75,  76,  77,  78,  79,  80,  81,  82,  83,
+	 84,  85,  86,  87,  88,  89,  90,  91,  92,  93,  94,  95,  96,  97,
+	130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143,
+	},
+	.oobavail	= 32,
+	.oobfree	= {
+		{98, 32},
 	}
 };
 
@@ -249,11 +291,11 @@ unsigned flash_rd_reg(struct msm_nand_chip *chip, unsigned addr)
 		(msm_virt_to_dma(chip, &dma_buffer->cmd) >> 3) | CMD_PTR_LP;
 	dma_buffer->data = 0xeeeeeeee;
 
-	dsb();
+	mb();
 	msm_dmov_exec_cmd(
-		chip->dma_channel, crci_mask, DMOV_CMD_PTR_LIST |
+		chip->dma_channel, DMOV_CMD_PTR_LIST |
 		DMOV_CMD_ADDR(msm_virt_to_dma(chip, &dma_buffer->cmdptr)));
-	dsb();
+	mb();
 
 	rv = dma_buffer->data;
 
@@ -283,11 +325,11 @@ void flash_wr_reg(struct msm_nand_chip *chip, unsigned addr, unsigned val)
 		(msm_virt_to_dma(chip, &dma_buffer->cmd) >> 3) | CMD_PTR_LP;
 	dma_buffer->data = val;
 
-	dsb();
+	mb();
 	msm_dmov_exec_cmd(
-		chip->dma_channel, crci_mask, DMOV_CMD_PTR_LIST |
+		chip->dma_channel, DMOV_CMD_PTR_LIST |
 		DMOV_CMD_ADDR(msm_virt_to_dma(chip, &dma_buffer->cmdptr)));
-	dsb();
+	mb();
 
 	msm_nand_release_dma_buffer(chip, dma_buffer, sizeof(*dma_buffer));
 }
@@ -369,10 +411,10 @@ uint32_t flash_read_id(struct msm_nand_chip *chip)
 	dma_buffer->cmdptr = (msm_virt_to_dma(chip, dma_buffer->cmd) >> 3
 			) | CMD_PTR_LP;
 
-	dsb();
-	msm_dmov_exec_cmd(chip->dma_channel, crci_mask, DMOV_CMD_PTR_LIST |
+	mb();
+	msm_dmov_exec_cmd(chip->dma_channel, DMOV_CMD_PTR_LIST |
 		DMOV_CMD_ADDR(msm_virt_to_dma(chip, &dma_buffer->cmdptr)));
-	dsb();
+	mb();
 
 	pr_info("status: %x\n", dma_buffer->data[3]);
 	pr_info("nandid: %x maker %02x device %02x\n",
@@ -390,6 +432,7 @@ struct flash_identification {
 	uint32_t pagesize;
 	uint32_t blksize;
 	uint32_t oobsize;
+	uint32_t ecc_correctability;
 } supported_flash;
 
 uint16_t flash_onfi_crc_check(uint8_t *buffer, uint16_t count)
@@ -437,7 +480,7 @@ uint32_t flash_onfi_probe(struct msm_nand_chip *chip)
 		uint16_t guaranteed_valid_begin_blocks_endurance;
 		uint8_t  number_of_programs_per_page;
 		uint8_t  partial_program_attributes;
-		uint8_t  number_of_bits_ecc_correctaility;
+		uint8_t  number_of_bits_ecc_correctability;
 		uint8_t  number_of_interleaved_address_bits;
 		uint8_t  interleaved_operation_attributes;
 		uint8_t  reserved2[13];
@@ -633,11 +676,11 @@ uint32_t flash_onfi_probe(struct msm_nand_chip *chip)
 		dma_buffer->cmdptr = (msm_virt_to_dma(chip, dma_buffer->cmd)
 				>> 3) | CMD_PTR_LP;
 
-		dsb();
-		msm_dmov_exec_cmd(chip->dma_channel, crci_mask,
+		mb();
+		msm_dmov_exec_cmd(chip->dma_channel,
 			DMOV_CMD_PTR_LIST | DMOV_CMD_ADDR(msm_virt_to_dma(chip,
 			&dma_buffer->cmdptr)));
-		dsb();
+		mb();
 
 		/* Check for errors, protection violations etc */
 		if (dma_buffer->data.flash_status & 0x110) {
@@ -702,6 +745,9 @@ uint32_t flash_onfi_probe(struct msm_nand_chip *chip)
 					onfi_param_page_ptr->
 					number_of_blocks_per_logical_unit
 					* supported_flash.blksize;
+				supported_flash.ecc_correctability =
+					onfi_param_page_ptr->
+					number_of_bits_ecc_correctability;
 
 				pr_info("ONFI probe : Found an ONFI "
 					"compliant device %s\n",
@@ -743,6 +789,7 @@ static int msm_nand_read_oob(struct mtd_info *mtd, loff_t from,
 			uint32_t chipsel;
 			uint32_t cfg0;
 			uint32_t cfg1;
+			uint32_t eccbchcfg;
 			uint32_t exec;
 			uint32_t ecccfg;
 			struct {
@@ -854,7 +901,7 @@ static int msm_nand_read_oob(struct mtd_info *mtd, loff_t from,
 		   (dma_buffer = msm_nand_get_dma_buffer(
 			    chip, sizeof(*dma_buffer))));
 
-	oob_col = start_sector * 0x210;
+	oob_col = start_sector * chip->cw_size;
 	if (chip->CFG1 & CFG1_WIDE_FLASH)
 		oob_col >>= 1;
 
@@ -869,11 +916,13 @@ static int msm_nand_read_oob(struct mtd_info *mtd, loff_t from,
 			(chip->CFG0 & ~(7U << 6))
 				| (((cwperpage-1) - start_sector) << 6);
 			dma_buffer->data.cfg1 = chip->CFG1;
+			if (enable_bch_ecc)
+				dma_buffer->data.eccbchcfg = chip->ecc_bch_cfg;
 		} else {
 			dma_buffer->data.cmd = MSM_NAND_CMD_PAGE_READ;
-			dma_buffer->data.cfg0 = (MSM_NAND_CFG0_RAW
+			dma_buffer->data.cfg0 = (chip->CFG0_RAW
 					& ~(7U << 6)) | ((cwperpage-1) << 6);
-			dma_buffer->data.cfg1 = MSM_NAND_CFG1_RAW |
+			dma_buffer->data.cfg1 = chip->CFG1_RAW |
 					(chip->CFG1 & CFG1_WIDE_FLASH);
 		}
 
@@ -912,7 +961,10 @@ static int msm_nand_read_oob(struct mtd_info *mtd, loff_t from,
 				cmd->src = msm_virt_to_dma(chip,
 							&dma_buffer->data.cfg0);
 				cmd->dst = MSM_NAND_DEV0_CFG0;
-				cmd->len = 8;
+				if (enable_bch_ecc)
+					cmd->len = 12;
+				else
+					cmd->len = 8;
 				cmd++;
 
 				dma_buffer->data.ecccfg = chip->ecc_buf_cfg;
@@ -951,7 +1003,7 @@ static int msm_nand_read_oob(struct mtd_info *mtd, loff_t from,
 					sectordatasize = (n < (cwperpage - 1))
 					? 516 : (512 - ((cwperpage - 1) << 2));
 				else
-					sectordatasize = 528;
+					sectordatasize = chip->cw_size;
 
 				cmd->cmd = 0;
 				cmd->src = MSM_NAND_FLASH_BUFFER;
@@ -969,10 +1021,11 @@ static int msm_nand_read_oob(struct mtd_info *mtd, loff_t from,
 						(512 - ((cwperpage - 1) << 2));
 					sectoroobsize = (cwperpage << 2);
 					if (ops->mode != MTD_OOB_AUTO)
-						sectoroobsize += 10;
+						sectoroobsize +=
+							chip->ecc_parity_bytes;
 				} else {
 					cmd->src = MSM_NAND_FLASH_BUFFER + 516;
-					sectoroobsize = 10;
+					sectoroobsize = chip->ecc_parity_bytes;
 				}
 
 				cmd->dst = oob_dma_addr_curr;
@@ -996,11 +1049,11 @@ static int msm_nand_read_oob(struct mtd_info *mtd, loff_t from,
 			(msm_virt_to_dma(chip, dma_buffer->cmd) >> 3)
 			| CMD_PTR_LP;
 
-		dsb();
-		msm_dmov_exec_cmd(chip->dma_channel, crci_mask,
+		mb();
+		msm_dmov_exec_cmd(chip->dma_channel,
 			DMOV_CMD_PTR_LIST | DMOV_CMD_ADDR(msm_virt_to_dma(chip,
 			&dma_buffer->cmdptr)));
-		dsb();
+		mb();
 
 		/* if any of the writes failed (0x10), or there
 		 * was a protection violation (0x100), we lose
@@ -1025,7 +1078,8 @@ static int msm_nand_read_oob(struct mtd_info *mtd, loff_t from,
 					/* empty blocks read 0x54 at
 					 * these offsets
 					 */
-					if (n % 516 == 3 && datbuf[n] == 0x54)
+					if ((n % 516 == 3 || n % 516 == 175)
+							&& datbuf[n] == 0x54)
 						datbuf[n] = 0xff;
 					if (datbuf[n] != 0xff) {
 						pageerr = rawerr;
@@ -1039,18 +1093,27 @@ static int msm_nand_read_oob(struct mtd_info *mtd, loff_t from,
 
 			}
 			if (ops->oobbuf) {
+				dma_sync_single_for_cpu(chip->dev,
+				oob_dma_addr_curr - (ops->ooblen - oob_len),
+				ops->ooblen - oob_len, DMA_BIDIRECTIONAL);
+
 				for (n = 0; n < ops->ooblen; n++) {
 					if (ops->oobbuf[n] != 0xff) {
 						pageerr = rawerr;
 						break;
 					}
 				}
+
+				dma_sync_single_for_device(chip->dev,
+				oob_dma_addr_curr - (ops->ooblen - oob_len),
+				ops->ooblen - oob_len, DMA_BIDIRECTIONAL);
 			}
 		}
 		if (pageerr) {
 			for (n = start_sector; n < cwperpage; n++) {
-				if (dma_buffer->data.result[n].buffer_status
-						& 0x8) {
+				if (enable_bch_ecc ?
+			(dma_buffer->data.result[n].buffer_status & 0x10) :
+			(dma_buffer->data.result[n].buffer_status & 0x8)) {
 					/* not thread safe */
 					mtd->ecc_stats.failed++;
 					pageerr = -EBADMSG;
@@ -1060,8 +1123,9 @@ static int msm_nand_read_oob(struct mtd_info *mtd, loff_t from,
 		}
 		if (!rawerr) { /* check for corretable errors */
 			for (n = start_sector; n < cwperpage; n++) {
-				ecc_errors = dma_buffer->data.
-					result[n].buffer_status & 0x7;
+				ecc_errors = enable_bch_ecc ?
+			(dma_buffer->data.result[n].buffer_status & 0xF) :
+			(dma_buffer->data.result[n].buffer_status & 0x7);
 				if (ecc_errors) {
 					total_ecc_errors += ecc_errors;
 					/* not thread safe */
@@ -1141,6 +1205,7 @@ static int msm_nand_read_oob_dualnandc(struct mtd_info *mtd, loff_t from,
 			uint32_t chipsel_cs1;
 			uint32_t cfg0;
 			uint32_t cfg1;
+			uint32_t eccbchcfg;
 			uint32_t exec;
 			uint32_t ecccfg;
 			uint32_t ebi2_chip_select_cfg0;
@@ -1178,6 +1243,7 @@ static int msm_nand_read_oob_dualnandc(struct mtd_info *mtd, loff_t from,
 	uint32_t ecc_errors;
 	uint32_t total_ecc_errors = 0;
 	unsigned cwperpage;
+	unsigned cw_offset = chip->cw_size;
 #if VERBOSE
 		pr_info("================================================="
 				"============\n");
@@ -1267,9 +1333,11 @@ static int msm_nand_read_oob_dualnandc(struct mtd_info *mtd, loff_t from,
 		   (dma_buffer = msm_nand_get_dma_buffer(
 			    chip, sizeof(*dma_buffer))));
 
-	oob_col = start_sector * 0x210;
-	if (chip->CFG1 & CFG1_WIDE_FLASH)
+	oob_col = start_sector * chip->cw_size;
+	if (chip->CFG1 & CFG1_WIDE_FLASH) {
 		oob_col >>= 1;
+		cw_offset >>= 1;
+	}
 
 	err = 0;
 	while (page_count-- > 0) {
@@ -1286,11 +1354,13 @@ static int msm_nand_read_oob_dualnandc(struct mtd_info *mtd, loff_t from,
 				| (((cwperpage >> 1)-1) << 6);
 			}
 			dma_buffer->data.cfg1 = chip->CFG1;
+			if (enable_bch_ecc)
+				dma_buffer->data.eccbchcfg = chip->ecc_bch_cfg;
 		} else {
 			dma_buffer->data.cmd = MSM_NAND_CMD_PAGE_READ;
-			dma_buffer->data.cfg0 = ((MSM_NAND_CFG0_RAW &
+			dma_buffer->data.cfg0 = ((chip->CFG0_RAW &
 				~(7U << 6)) | ((((cwperpage >> 1)-1) << 6)));
-			dma_buffer->data.cfg1 = MSM_NAND_CFG1_RAW |
+			dma_buffer->data.cfg1 = chip->CFG1_RAW |
 					(chip->CFG1 & CFG1_WIDE_FLASH);
 		}
 
@@ -1303,8 +1373,9 @@ static int msm_nand_read_oob_dualnandc(struct mtd_info *mtd, loff_t from,
 								0xF00F3000;
 			} else {
 				dma_buffer->data.nandc01_addr0 = page << 16;
+				/* NC10 ADDR0 points to the next code word */
 				dma_buffer->data.nandc10_addr0 = (page << 16) |
-									 0x108;
+								cw_offset;
 				dma_buffer->data.nc10_flash_dev_cmd_vld = 0x1D;
 				dma_buffer->data.nc10_flash_dev_cmd1 =
 								0xF00FE005;
@@ -1372,7 +1443,10 @@ static int msm_nand_read_oob_dualnandc(struct mtd_info *mtd, loff_t from,
 					cmd->src = msm_virt_to_dma(chip,
 						&dma_buffer->data.cfg0);
 					cmd->dst = NC11(MSM_NAND_DEV0_CFG0);
-					cmd->len = 8;
+					if (enable_bch_ecc)
+						cmd->len = 12;
+					else
+						cmd->len = 8;
 					cmd++;
 				} else {
 					/* enable CS0 & CS1 */
@@ -1538,12 +1612,13 @@ static int msm_nand_read_oob_dualnandc(struct mtd_info *mtd, loff_t from,
 			/* read data block
 			 * (only valid if status says success)
 			 */
-			if (ops->datbuf) {
+			if (ops->datbuf || (ops->oobbuf &&
+						 ops->mode != MTD_OOB_AUTO)) {
 				if (ops->mode != MTD_OOB_RAW)
 					sectordatasize = (n < (cwperpage - 1))
 					? 516 : (512 - ((cwperpage - 1) << 2));
 				else
-					sectordatasize = 528;
+					sectordatasize = chip->cw_size;
 
 				if (n % 2 == 0) {
 					/* MASK DATA ACK/REQ --> NC10 (0xF28)*/
@@ -1593,12 +1668,19 @@ static int msm_nand_read_oob_dualnandc(struct mtd_info *mtd, loff_t from,
 					cmd->len = 4;
 					cmd++;
 
-					cmd->cmd = 0;
-					cmd->src = NC01(MSM_NAND_FLASH_BUFFER);
-					cmd->dst = data_dma_addr_curr;
-					data_dma_addr_curr += sectordatasize;
-					cmd->len = sectordatasize;
-					cmd++;
+					/* Read only when there is data
+					 * buffer
+					 */
+					if (ops->datbuf) {
+						cmd->cmd = 0;
+						cmd->src =
+						NC01(MSM_NAND_FLASH_BUFFER);
+						cmd->dst = data_dma_addr_curr;
+						data_dma_addr_curr +=
+						sectordatasize;
+						cmd->len = sectordatasize;
+						cmd++;
+					}
 				} else {
 					/* MASK DATA ACK/REQ -->
 					 * NC01 (0xA3C)
@@ -1655,12 +1737,20 @@ static int msm_nand_read_oob_dualnandc(struct mtd_info *mtd, loff_t from,
 						cmd->len = 4;
 						cmd++;
 					}
-					cmd->cmd = 0;
-					cmd->src = NC10(MSM_NAND_FLASH_BUFFER);
-					cmd->dst = data_dma_addr_curr;
-					data_dma_addr_curr += sectordatasize;
-					cmd->len = sectordatasize;
-					cmd++;
+
+					/* Read only when there is data
+					 * buffer
+					 */
+					if (ops->datbuf) {
+						cmd->cmd = 0;
+						cmd->src =
+						NC10(MSM_NAND_FLASH_BUFFER);
+						cmd->dst = data_dma_addr_curr;
+						data_dma_addr_curr +=
+						sectordatasize;
+						cmd->len = sectordatasize;
+						cmd++;
+					}
 				}
 			}
 
@@ -1675,19 +1765,18 @@ static int msm_nand_read_oob_dualnandc(struct mtd_info *mtd, loff_t from,
 						(512 - ((cwperpage - 1) << 2));
 					sectoroobsize = (cwperpage << 2);
 					if (ops->mode != MTD_OOB_AUTO)
-						sectoroobsize += 10;
+						sectoroobsize +=
+							chip->ecc_parity_bytes;
 				} else {
-					if (n % 2 == 0) {
+					if (n % 2 == 0)
 						cmd->src =
 						NC01(MSM_NAND_FLASH_BUFFER)
 						+ 516;
-						sectoroobsize = 10;
-					} else {
+					else
 						cmd->src =
 						NC10(MSM_NAND_FLASH_BUFFER)
 						+ 516;
-						sectoroobsize = 10;
-					}
+					sectoroobsize = chip->ecc_parity_bytes;
 				}
 				cmd->dst = oob_dma_addr_curr;
 				if (sectoroobsize < oob_len)
@@ -1741,11 +1830,11 @@ static int msm_nand_read_oob_dualnandc(struct mtd_info *mtd, loff_t from,
 			(msm_virt_to_dma(chip, dma_buffer->cmd) >> 3)
 			| CMD_PTR_LP;
 
-		dsb();
-		msm_dmov_exec_cmd(chip->dma_channel, crci_mask,
+		mb();
+		msm_dmov_exec_cmd(chip->dma_channel,
 			DMOV_CMD_PTR_LIST | DMOV_CMD_ADDR(msm_virt_to_dma(chip,
 			&dma_buffer->cmdptr)));
-		dsb();
+		mb();
 
 		/* if any of the writes failed (0x10), or there
 		 * was a protection violation (0x100), we lose
@@ -1770,7 +1859,8 @@ static int msm_nand_read_oob_dualnandc(struct mtd_info *mtd, loff_t from,
 					/* empty blocks read 0x54 at
 					 * these offsets
 					 */
-					if (n % 516 == 3 && datbuf[n] == 0x54)
+					if ((n % 516 == 3 || n % 516 == 175)
+							&& datbuf[n] == 0x54)
 						datbuf[n] = 0xff;
 					if (datbuf[n] != 0xff) {
 						pageerr = rawerr;
@@ -1784,12 +1874,20 @@ static int msm_nand_read_oob_dualnandc(struct mtd_info *mtd, loff_t from,
 
 			}
 			if (ops->oobbuf) {
+				dma_sync_single_for_cpu(chip->dev,
+				oob_dma_addr_curr - (ops->ooblen - oob_len),
+				ops->ooblen - oob_len, DMA_BIDIRECTIONAL);
+
 				for (n = 0; n < ops->ooblen; n++) {
 					if (ops->oobbuf[n] != 0xff) {
 						pageerr = rawerr;
 						break;
 					}
 				}
+
+				dma_sync_single_for_device(chip->dev,
+				oob_dma_addr_curr - (ops->ooblen - oob_len),
+				ops->ooblen - oob_len, DMA_BIDIRECTIONAL);
 			}
 		}
 		if (pageerr) {
@@ -1922,6 +2020,7 @@ msm_nand_write_oob(struct mtd_info *mtd, loff_t to, struct mtd_oob_ops *ops)
 			uint32_t chipsel;
 			uint32_t cfg0;
 			uint32_t cfg1;
+			uint32_t eccbchcfg;
 			uint32_t exec;
 			uint32_t ecccfg;
 			uint32_t clrfstatus;
@@ -2030,10 +2129,12 @@ msm_nand_write_oob(struct mtd_info *mtd, loff_t to, struct mtd_oob_ops *ops)
 		if (ops->mode != MTD_OOB_RAW) {
 			dma_buffer->data.cfg0 = chip->CFG0;
 			dma_buffer->data.cfg1 = chip->CFG1;
+			if (enable_bch_ecc)
+				dma_buffer->data.eccbchcfg = chip->ecc_bch_cfg;
 		} else {
-			dma_buffer->data.cfg0 = (MSM_NAND_CFG0_RAW &
+			dma_buffer->data.cfg0 = (chip->CFG0_RAW &
 					~(7U << 6)) | ((cwperpage-1) << 6);
-			dma_buffer->data.cfg1 = MSM_NAND_CFG1_RAW |
+			dma_buffer->data.cfg1 = chip->CFG1_RAW |
 						(chip->CFG1 & CFG1_WIDE_FLASH);
 		}
 
@@ -2073,7 +2174,10 @@ msm_nand_write_oob(struct mtd_info *mtd, loff_t to, struct mtd_oob_ops *ops)
 				cmd->src = msm_virt_to_dma(chip,
 							&dma_buffer->data.cfg0);
 				cmd->dst = MSM_NAND_DEV0_CFG0;
-				cmd->len = 8;
+				if (enable_bch_ecc)
+					cmd->len = 12;
+				else
+					cmd->len = 8;
 				cmd++;
 
 				dma_buffer->data.ecccfg = chip->ecc_buf_cfg;
@@ -2090,7 +2194,7 @@ msm_nand_write_oob(struct mtd_info *mtd, loff_t to, struct mtd_oob_ops *ops)
 				sectordatawritesize = (n < (cwperpage - 1)) ?
 					516 : (512 - ((cwperpage - 1) << 2));
 			else
-				sectordatawritesize = 528;
+				sectordatawritesize = chip->cw_size;
 
 			cmd->cmd = 0;
 			cmd->src = data_dma_addr_curr;
@@ -2116,9 +2220,11 @@ msm_nand_write_oob(struct mtd_info *mtd, loff_t to, struct mtd_oob_ops *ops)
 				}
 				if (ops->mode != MTD_OOB_AUTO) {
 					/* skip ecc bytes in oobbuf */
-					if (oob_len < 10) {
-						oob_dma_addr_curr += 10;
-						oob_len -= 10;
+					if (oob_len < chip->ecc_parity_bytes) {
+						oob_dma_addr_curr +=
+							chip->ecc_parity_bytes;
+						oob_len -=
+							chip->ecc_parity_bytes;
 					} else {
 						oob_dma_addr_curr += oob_len;
 						oob_len = 0;
@@ -2168,11 +2274,11 @@ msm_nand_write_oob(struct mtd_info *mtd, loff_t to, struct mtd_oob_ops *ops)
 			(msm_virt_to_dma(chip, dma_buffer->cmd) >> 3) |
 			CMD_PTR_LP;
 
-		dsb();
-		msm_dmov_exec_cmd(chip->dma_channel, crci_mask,
+		mb();
+		msm_dmov_exec_cmd(chip->dma_channel,
 			DMOV_CMD_PTR_LIST | DMOV_CMD_ADDR(
 				msm_virt_to_dma(chip, &dma_buffer->cmdptr)));
-		dsb();
+		mb();
 
 		/* if any of the writes failed (0x10), or there was a
 		 * protection violation (0x100), or the program success
@@ -2248,6 +2354,7 @@ msm_nand_write_oob_dualnandc(struct mtd_info *mtd, loff_t to,
 			uint32_t chipsel_cs1;
 			uint32_t cfg0;
 			uint32_t cfg1;
+			uint32_t eccbchcfg;
 			uint32_t exec;
 			uint32_t ecccfg;
 			uint32_t cfg0_nc01;
@@ -2280,6 +2387,7 @@ msm_nand_write_oob_dualnandc(struct mtd_info *mtd, loff_t to,
 	unsigned page_count;
 	unsigned pages_written = 0;
 	unsigned cwperpage;
+	unsigned cw_offset = chip->cw_size;
 #if VERBOSE
 		pr_info("================================================="
 				"============\n");
@@ -2368,6 +2476,9 @@ msm_nand_write_oob_dualnandc(struct mtd_info *mtd, loff_t to,
 	wait_event(chip->wait_queue, (dma_buffer =
 			msm_nand_get_dma_buffer(chip, sizeof(*dma_buffer))));
 
+	if (chip->CFG1 & CFG1_WIDE_FLASH)
+		cw_offset >>= 1;
+
 	dma_buffer->data.ebi2_chip_select_cfg0 = 0x00000805;
 	dma_buffer->data.adm_mux_data_ack_req_nc01 = 0x00000A3C;
 	dma_buffer->data.adm_mux_cmd_ack_req_nc01  = 0x0000053C;
@@ -2389,10 +2500,12 @@ msm_nand_write_oob_dualnandc(struct mtd_info *mtd, loff_t to,
 			dma_buffer->data.cfg0 = ((chip->CFG0 & ~(7U << 6))
 				& ~(1 << 4)) | ((((cwperpage >> 1)-1)) << 6);
 			dma_buffer->data.cfg1 = chip->CFG1;
+			if (enable_bch_ecc)
+				dma_buffer->data.eccbchcfg = chip->ecc_bch_cfg;
 		} else {
-			dma_buffer->data.cfg0 = ((MSM_NAND_CFG0_RAW &
+			dma_buffer->data.cfg0 = ((chip->CFG0_RAW &
 			~(7U << 6)) & ~(1 << 4)) | (((cwperpage >> 1)-1) << 6);
-			dma_buffer->data.cfg1 = MSM_NAND_CFG1_RAW |
+			dma_buffer->data.cfg1 = chip->CFG1_RAW |
 					(chip->CFG1 & CFG1_WIDE_FLASH);
 		}
 
@@ -2414,7 +2527,9 @@ msm_nand_write_oob_dualnandc(struct mtd_info *mtd, loff_t to,
 
 		if (!interleave_enable) {
 			dma_buffer->data.nandc01_addr0 = (page << 16) | 0x0;
-			dma_buffer->data.nandc10_addr0 = (page << 16) | 0x108;
+			/* NC10 ADDR0 points to the next code word */
+			dma_buffer->data.nandc10_addr0 =
+					(page << 16) | cw_offset;
 		} else {
 			dma_buffer->data.nandc01_addr0 =
 			dma_buffer->data.nandc10_addr0 = (page << 16) | 0x0;
@@ -2477,7 +2592,10 @@ msm_nand_write_oob_dualnandc(struct mtd_info *mtd, loff_t to,
 					cmd->src = msm_virt_to_dma(chip,
 						&dma_buffer->data.cfg1);
 					cmd->dst = NC11(MSM_NAND_DEV0_CFG1);
-					cmd->len = 4;
+					if (enable_bch_ecc)
+						cmd->len = 8;
+					else
+						cmd->len = 4;
 					cmd++;
 				} else {
 					/* enable CS1 */
@@ -2595,7 +2713,7 @@ msm_nand_write_oob_dualnandc(struct mtd_info *mtd, loff_t to,
 				sectordatawritesize = (n < (cwperpage - 1)) ?
 					516 : (512 - ((cwperpage - 1) << 2));
 			else
-				sectordatawritesize = 528;
+				sectordatawritesize = chip->cw_size;
 
 			cmd->cmd = 0;
 			cmd->src = data_dma_addr_curr;
@@ -2625,9 +2743,11 @@ msm_nand_write_oob_dualnandc(struct mtd_info *mtd, loff_t to,
 				}
 				if (ops->mode != MTD_OOB_AUTO) {
 					/* skip ecc bytes in oobbuf */
-					if (oob_len < 10) {
-						oob_dma_addr_curr += 10;
-						oob_len -= 10;
+					if (oob_len < chip->ecc_parity_bytes) {
+						oob_dma_addr_curr +=
+							chip->ecc_parity_bytes;
+						oob_len -=
+							chip->ecc_parity_bytes;
 					} else {
 						oob_dma_addr_curr += oob_len;
 						oob_len = 0;
@@ -2763,11 +2883,11 @@ msm_nand_write_oob_dualnandc(struct mtd_info *mtd, loff_t to,
 		dma_buffer->cmdptr =
 		((msm_virt_to_dma(chip, dma_buffer->cmd) >> 3) | CMD_PTR_LP);
 
-		dsb();
-		msm_dmov_exec_cmd(chip->dma_channel, crci_mask,
+		mb();
+		msm_dmov_exec_cmd(chip->dma_channel,
 			DMOV_CMD_PTR_LIST | DMOV_CMD_ADDR(
 				msm_virt_to_dma(chip, &dma_buffer->cmdptr)));
-		dsb();
+		mb();
 
 		/* if any of the writes failed (0x10), or there was a
 		 * protection violation (0x100), or the program success
@@ -2956,11 +3076,11 @@ msm_nand_erase(struct mtd_info *mtd, struct erase_info *instr)
 	dma_buffer->cmdptr =
 		(msm_virt_to_dma(chip, dma_buffer->cmd) >> 3) | CMD_PTR_LP;
 
-	dsb();
+	mb();
 	msm_dmov_exec_cmd(
-		chip->dma_channel, crci_mask, DMOV_CMD_PTR_LIST |
+		chip->dma_channel, DMOV_CMD_PTR_LIST |
 		DMOV_CMD_ADDR(msm_virt_to_dma(chip, &dma_buffer->cmdptr)));
-	dsb();
+	mb();
 
 	/* we fail if there was an operation error, a mpu error, or the
 	 * erase success bit was not set.
@@ -3195,11 +3315,11 @@ msm_nand_erase_dualnandc(struct mtd_info *mtd, struct erase_info *instr)
 	dma_buffer->cmdptr =
 		(msm_virt_to_dma(chip, dma_buffer->cmd) >> 3) | CMD_PTR_LP;
 
-	dsb();
+	mb();
 	msm_dmov_exec_cmd(
-		chip->dma_channel, crci_mask, DMOV_CMD_PTR_LIST |
+		chip->dma_channel, DMOV_CMD_PTR_LIST |
 		DMOV_CMD_ADDR(msm_virt_to_dma(chip, &dma_buffer->cmdptr)));
-	dsb();
+	mb();
 
 	/* we fail if there was an operation error, a mpu error, or the
 	 * erase success bit was not set.
@@ -3241,6 +3361,7 @@ msm_nand_block_isbad(struct mtd_info *mtd, loff_t ofs)
 			uint32_t chipsel;
 			uint32_t cfg0;
 			uint32_t cfg1;
+			uint32_t eccbchcfg;
 			uint32_t exec;
 			uint32_t ecccfg;
 			struct {
@@ -3283,16 +3404,18 @@ msm_nand_block_isbad(struct mtd_info *mtd, loff_t ofs)
 	cmd = dma_buffer->cmd;
 
 	dma_buffer->data.cmd = MSM_NAND_CMD_PAGE_READ;
-	dma_buffer->data.cfg0 = MSM_NAND_CFG0_RAW & ~(7U << 6);
-	dma_buffer->data.cfg1 = MSM_NAND_CFG1_RAW |
+	dma_buffer->data.cfg0 = chip->CFG0_RAW & ~(7U << 6);
+	dma_buffer->data.cfg1 = chip->CFG1_RAW |
 				(chip->CFG1 & CFG1_WIDE_FLASH);
+	if (enable_bch_ecc)
+		dma_buffer->data.eccbchcfg = chip->ecc_bch_cfg;
 
 	if (chip->CFG1 & CFG1_WIDE_FLASH)
 		dma_buffer->data.addr0 = (page << 16) |
-			((528*(cwperpage-1)) >> 1);
+			((chip->cw_size * (cwperpage-1)) >> 1);
 	else
 		dma_buffer->data.addr0 = (page << 16) |
-			(528*(cwperpage-1));
+			(chip->cw_size * (cwperpage-1));
 
 	dma_buffer->data.addr1 = (page >> 16) & 0xff;
 	dma_buffer->data.chipsel = 0 | 4;
@@ -3311,7 +3434,10 @@ msm_nand_block_isbad(struct mtd_info *mtd, loff_t ofs)
 	cmd->cmd = 0;
 	cmd->src = msm_virt_to_dma(chip, &dma_buffer->data.cfg0);
 	cmd->dst = MSM_NAND_DEV0_CFG0;
-	cmd->len = 8;
+	if (enable_bch_ecc)
+		cmd->len = 12;
+	else
+		cmd->len = 8;
 	cmd++;
 
 	cmd->cmd = 0;
@@ -3328,7 +3454,7 @@ msm_nand_block_isbad(struct mtd_info *mtd, loff_t ofs)
 
 	cmd->cmd = 0;
 	cmd->src = MSM_NAND_FLASH_BUFFER +
-			(mtd->writesize - (528*(cwperpage-1)));
+	(mtd->writesize - (chip->cw_size * (cwperpage-1)));
 	cmd->dst = msm_virt_to_dma(chip, buf);
 	cmd->len = 4;
 	cmd++;
@@ -3341,10 +3467,10 @@ msm_nand_block_isbad(struct mtd_info *mtd, loff_t ofs)
 	dma_buffer->cmdptr = (msm_virt_to_dma(chip,
 				dma_buffer->cmd) >> 3) | CMD_PTR_LP;
 
-	dsb();
-	msm_dmov_exec_cmd(chip->dma_channel, crci_mask, DMOV_CMD_PTR_LIST |
+	mb();
+	msm_dmov_exec_cmd(chip->dma_channel, DMOV_CMD_PTR_LIST |
 		DMOV_CMD_ADDR(msm_virt_to_dma(chip, &dma_buffer->cmdptr)));
-	dsb();
+	mb();
 
 	ret = 0;
 	if (dma_buffer->data.result.flash_status & 0x110)
@@ -3434,8 +3560,8 @@ msm_nand_block_isbad_dualnandc(struct mtd_info *mtd, loff_t ofs)
 	cmd = dma_buffer->cmd;
 
 	dma_buffer->data.cmd = MSM_NAND_CMD_PAGE_READ;
-	dma_buffer->data.cfg0 = MSM_NAND_CFG0_RAW & ~(7U << 6);
-	dma_buffer->data.cfg1 = MSM_NAND_CFG1_RAW |
+	dma_buffer->data.cfg0 = chip->CFG0_RAW & ~(7U << 6);
+	dma_buffer->data.cfg1 = chip->CFG1_RAW |
 				(chip->CFG1 & CFG1_WIDE_FLASH);
 
 	if (chip->CFG1 & CFG1_WIDE_FLASH)
@@ -3598,10 +3724,10 @@ msm_nand_block_isbad_dualnandc(struct mtd_info *mtd, loff_t ofs)
 	dma_buffer->cmdptr = (msm_virt_to_dma(chip,
 				dma_buffer->cmd) >> 3) | CMD_PTR_LP;
 
-	dsb();
-	msm_dmov_exec_cmd(chip->dma_channel, crci_mask, DMOV_CMD_PTR_LIST |
+	mb();
+	msm_dmov_exec_cmd(chip->dma_channel, DMOV_CMD_PTR_LIST |
 		DMOV_CMD_ADDR(msm_virt_to_dma(chip, &dma_buffer->cmdptr)));
-	dsb();
+	mb();
 
 	ret = 0;
 	if ((dma_buffer->data.result[0].flash_status & 0x110) ||
@@ -3813,11 +3939,11 @@ uint32_t flash_onenand_probe(struct msm_nand_chip *chip)
 	dma_buffer->cmdptr = (msm_virt_to_dma(chip, dma_buffer->cmd)
 			>> 3) | CMD_PTR_LP;
 
-	dsb();
-	msm_dmov_exec_cmd(chip->dma_channel, crci_mask, DMOV_CMD_PTR_LIST
+	mb();
+	msm_dmov_exec_cmd(chip->dma_channel, DMOV_CMD_PTR_LIST
 			| DMOV_CMD_ADDR(msm_virt_to_dma(chip,
 			&dma_buffer->cmdptr)));
-	dsb();
+	mb();
 
 	/* Check for errors, protection violations etc */
 	if (dma_buffer->data.status & 0x110) {
@@ -4442,11 +4568,11 @@ int msm_onenand_read_oob(struct mtd_info *mtd,
 		dma_buffer->cmdptr = (msm_virt_to_dma(chip, dma_buffer->cmd)
 				>> 3) | CMD_PTR_LP;
 
-		dsb();
-		msm_dmov_exec_cmd(chip->dma_channel, crci_mask,
+		mb();
+		msm_dmov_exec_cmd(chip->dma_channel,
 			DMOV_CMD_PTR_LIST | DMOV_CMD_ADDR(msm_virt_to_dma(chip,
 				&dma_buffer->cmdptr)));
-		dsb();
+		mb();
 
 		ecc_status = (dma_buffer->data.data3 >> 16) &
 							0x0000FFFF;
@@ -5188,11 +5314,11 @@ static int msm_onenand_write_oob(struct mtd_info *mtd, loff_t to,
 		dma_buffer->cmdptr = (msm_virt_to_dma(chip, dma_buffer->cmd)
 				>> 3) | CMD_PTR_LP;
 
-		dsb();
-		msm_dmov_exec_cmd(chip->dma_channel, crci_mask,
+		mb();
+		msm_dmov_exec_cmd(chip->dma_channel,
 			DMOV_CMD_PTR_LIST | DMOV_CMD_ADDR(msm_virt_to_dma(chip,
 				&dma_buffer->cmdptr)));
-		dsb();
+		mb();
 
 		ecc_status = (dma_buffer->data.data3 >> 16) & 0x0000FFFF;
 		interrupt_status = (dma_buffer->data.data4 >> 0)&0x0000FFFF;
@@ -5611,11 +5737,11 @@ static int msm_onenand_erase(struct mtd_info *mtd, struct erase_info *instr)
 	dma_buffer->cmdptr = (msm_virt_to_dma(chip, dma_buffer->cmd)
 			>> 3) | CMD_PTR_LP;
 
-	dsb();
-	msm_dmov_exec_cmd(chip->dma_channel, crci_mask, DMOV_CMD_PTR_LIST
+	mb();
+	msm_dmov_exec_cmd(chip->dma_channel, DMOV_CMD_PTR_LIST
 			| DMOV_CMD_ADDR(msm_virt_to_dma(chip,
 			&dma_buffer->cmdptr)));
-	dsb();
+	mb();
 
 	ecc_status = (dma_buffer->data.data3 >> 16) & 0x0000FFFF;
 	interrupt_status = (dma_buffer->data.data4 >> 0) & 0x0000FFFF;
@@ -6075,11 +6201,11 @@ static int msm_onenand_unlock(struct mtd_info *mtd, loff_t ofs, uint64_t len)
 		dma_buffer->cmdptr = (msm_virt_to_dma(chip, dma_buffer->cmd)
 				>> 3) | CMD_PTR_LP;
 
-		dsb();
-		msm_dmov_exec_cmd(chip->dma_channel, crci_mask,
+		mb();
+		msm_dmov_exec_cmd(chip->dma_channel,
 			DMOV_CMD_PTR_LIST | DMOV_CMD_ADDR(msm_virt_to_dma(chip,
 				&dma_buffer->cmdptr)));
-		dsb();
+		mb();
 
 		write_prot_status = (dma_buffer->data.data3 >> 16) & 0x0000FFFF;
 		interrupt_status = (dma_buffer->data.data4 >> 0) & 0x0000FFFF;
@@ -6439,11 +6565,11 @@ static int msm_onenand_lock(struct mtd_info *mtd, loff_t ofs, uint64_t len)
 		dma_buffer->cmdptr = (msm_virt_to_dma(chip, dma_buffer->cmd)
 				>> 3) | CMD_PTR_LP;
 
-		dsb();
-		msm_dmov_exec_cmd(chip->dma_channel, crci_mask,
+		mb();
+		msm_dmov_exec_cmd(chip->dma_channel,
 			DMOV_CMD_PTR_LIST | DMOV_CMD_ADDR(msm_virt_to_dma(chip,
 				&dma_buffer->cmdptr)));
-		dsb();
+		mb();
 
 		write_prot_status = (dma_buffer->data.data3 >> 16) & 0x0000FFFF;
 		interrupt_status = (dma_buffer->data.data4 >> 0) & 0x0000FFFF;
@@ -6618,7 +6744,15 @@ int msm_nand_scan(struct mtd_info *mtd, int maxchips)
 		else
 			mtd_writesize = mtd->writesize >> 1;
 
-		pr_info("Found a supported NAND device\n");
+		/* Check whether controller and NAND device support 8bit ECC*/
+		if ((flash_rd_reg(chip, MSM_NAND_HW_INFO) == 0x307)
+				&& (supported_flash.ecc_correctability >= 8)) {
+			pr_info("Found supported NAND device for %dbit ECC\n",
+					supported_flash.ecc_correctability);
+			enable_bch_ecc = 1;
+		} else {
+			pr_info("Found a supported NAND device\n");
+		}
 		pr_info("NAND Id  : 0x%x\n", supported_flash.flash_id);
 		pr_info("Buswidth : %d Bits\n", (wide_bus) ? 16 : 8);
 		pr_info("Density  : %lld MByte\n", (mtd->size>>20));
@@ -6630,29 +6764,51 @@ int msm_nand_scan(struct mtd_info *mtd, int maxchips)
 		return -ENODEV;
 	}
 
+	/* Size of each codeword is 532Bytes incase of 8bit BCH ECC*/
+	chip->cw_size = enable_bch_ecc ? 532 : 528;
 	chip->CFG0 = (((mtd_writesize >> 9)-1) << 6) /* 4/8 cw/pg for 2/4k */
 		|  (516 <<  9)  /* 516 user data bytes */
 		|   (10 << 19)  /* 10 parity bytes */
 		|    (5 << 27)  /* 5 address cycles */
 		|    (0 << 30)  /* Do not read status before data */
 		|    (1 << 31)  /* Send read cmd */
-		/* 0 spare bytes for 16 bit nand or 1 spare bytes for 8 bit */
-		| ((wide_bus) ? (0 << 23) : (1 << 23));
+		/* 0 spare bytes for 16 bit nand or 1/2 spare bytes for 8 bit */
+		| (wide_bus ? 0 << 23 : (enable_bch_ecc ? 2 << 23 : 1 << 23));
 
 	chip->CFG1 = (0 <<  0)  /* Enable ecc */
 		|    (7 <<  2)  /* 8 recovery cycles */
 		|    (0 <<  5)  /* Allow CS deassertion */
-		|  ((mtd_writesize - (528 * ((mtd_writesize >> 9) - 1)) + 1)
-				<<  6)  /* Bad block marker location */
+		/* Bad block marker location */
+		|  ((mtd_writesize - (chip->cw_size * (
+					(mtd_writesize >> 9) - 1)) + 1) <<  6)
 		|    (0 << 16)  /* Bad block in user data area */
 		|    (2 << 17)  /* 6 cycle tWB/tRB */
 		| ((wide_bus) ? CFG1_WIDE_FLASH : 0); /* Wide flash bit */
 
 	chip->ecc_buf_cfg = 0x203;
+	chip->CFG0_RAW = 0xA80420C0;
+	chip->CFG1_RAW = 0x5045D;
 
-	pr_info("CFG0 Init  : 0x%08x \n", chip->CFG0);
-	pr_info("CFG1 Init  : 0x%08x \n", chip->CFG1);
-	pr_info("ECCBUFCFG  : 0x%08x \n", chip->ecc_buf_cfg);
+	if (enable_bch_ecc) {
+		chip->CFG1 |= (1 << 27); /* Enable BCH engine */
+		chip->ecc_bch_cfg = (0 << 0) /* Enable ECC*/
+			|   (0 << 1) /* Enable/Disable SW reset of ECC engine */
+			|   (1 << 4) /* 8bit ecc*/
+			|   ((wide_bus) ? (14 << 8) : (13 << 8))/*parity bytes*/
+			|   (516 << 16) /* 516 user data bytes */
+			|   (1 << 30); /* Turn on ECC engine clocks always */
+		chip->CFG0_RAW = 0xA80428C0; /* CW size is increased to 532B */
+	}
+
+	/*
+	 * For 4bit RS ECC (default ECC), parity bytes = 10 (for x8 and x16 I/O)
+	 * For 8bit BCH ECC, parity bytes = 13 (x8) or 14 (x16 I/O).
+	 */
+	chip->ecc_parity_bytes = enable_bch_ecc ? (wide_bus ? 14 : 13) : 10;
+
+	pr_info("CFG0 Init  : 0x%08x\n", chip->CFG0);
+	pr_info("CFG1 Init  : 0x%08x\n", chip->CFG1);
+	pr_info("ECCBUFCFG  : 0x%08x\n", chip->ecc_buf_cfg);
 
 	if (mtd->oobsize == 64) {
 		mtd->oobavail = msm_nand_oob_64.oobavail;
@@ -6660,6 +6816,11 @@ int msm_nand_scan(struct mtd_info *mtd, int maxchips)
 	} else if (mtd->oobsize == 128) {
 		mtd->oobavail = msm_nand_oob_128.oobavail;
 		mtd->ecclayout = &msm_nand_oob_128;
+	} else if (mtd->oobsize == 224) {
+		mtd->oobavail = wide_bus ? msm_nand_oob_224_x16.oobavail :
+			msm_nand_oob_224_x8.oobavail;
+		mtd->ecclayout = wide_bus ? &msm_nand_oob_224_x16 :
+			&msm_nand_oob_224_x8;
 	} else if (mtd->oobsize == 256) {
 		mtd->oobavail = msm_nand_oob_256.oobavail;
 		mtd->ecclayout = &msm_nand_oob_256;
@@ -6764,11 +6925,11 @@ static int msm_nand_nc10_xfr_settings(struct mtd_info *mtd)
 	dma_buffer->cmdptr = (msm_virt_to_dma(chip, dma_buffer->cmd) >> 3)
 				| CMD_PTR_LP;
 
-	dsb();
-	msm_dmov_exec_cmd(chip->dma_channel, crci_mask, DMOV_CMD_PTR_LIST
+	mb();
+	msm_dmov_exec_cmd(chip->dma_channel, DMOV_CMD_PTR_LIST
 			| DMOV_CMD_ADDR(msm_virt_to_dma(chip,
 			&dma_buffer->cmdptr)));
-	dsb();
+	mb();
 	msm_nand_release_dma_buffer(chip, dma_buffer, sizeof(*dma_buffer));
 	return 0;
 }
@@ -6853,7 +7014,6 @@ static int __devinit msm_nand_probe(struct platform_device *pdev)
 	else
 		interleave_enable = 0;
 
-
 	if (!interleave_enable)
 		pr_info("%s: Dual Nand Ctrl in ping-pong mode\n", __func__);
 	else
@@ -6892,9 +7052,6 @@ no_dual_nand_ctlr_support:
 
 	pr_info("%s: allocated dma buffer at %p, dma_addr %x\n",
 		__func__, info->msm_nand.dma_buffer, info->msm_nand.dma_addr);
-
-	crci_mask = msm_dmov_build_crci_mask(2,
-			DMOV_NAND_CRCI_DATA, DMOV_NAND_CRCI_CMD);
 
 	info->mtd.name = dev_name(&pdev->dev);
 	info->mtd.priv = &info->msm_nand;

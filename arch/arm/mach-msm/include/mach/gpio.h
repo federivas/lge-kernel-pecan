@@ -182,13 +182,20 @@ enum msm_tlmm_hdrive_tgt {
 	TLMM_HDRV_SDC3_CLK,
 	TLMM_HDRV_SDC3_CMD,
 	TLMM_HDRV_SDC3_DATA,
+	TLMM_HDRV_SDC1_CLK,
+	TLMM_HDRV_SDC1_CMD,
+	TLMM_HDRV_SDC1_DATA,
 };
 
 enum msm_tlmm_pull_tgt {
 	TLMM_PULL_SDC4_CMD = 0,
 	TLMM_PULL_SDC4_DATA,
+	TLMM_PULL_SDC3_CLK,
 	TLMM_PULL_SDC3_CMD,
 	TLMM_PULL_SDC3_DATA,
+	TLMM_PULL_SDC1_CLK,
+	TLMM_PULL_SDC1_CMD,
+	TLMM_PULL_SDC1_DATA,
 };
 
 #ifdef CONFIG_MSM_V2_TLMM
@@ -209,7 +216,7 @@ void msm_tlmm_set_pull(enum msm_tlmm_pull_tgt tgt, int pull);
  * The irq passed to this function is the DC IRQ number, not the
  * irq number seen by the scorpion when the interrupt triggers.  For example,
  * if 0 is specified, then when DC IRQ 0 triggers, the scorpion will see
- * interrupt TLMM_SCSS_DIR_CONN_IRQ_0.
+ * interrupt TLMM_MSM_DIR_CONN_IRQ_0.
  *
  * input_polarity parameter specifies when the gpio should raise the direct
  * interrupt. A value of 0 means that it is active low, anything else means

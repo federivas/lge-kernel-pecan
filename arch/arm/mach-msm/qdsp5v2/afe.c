@@ -9,11 +9,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
- *
  */
 #include <linux/module.h>
 #include <linux/wait.h>
@@ -124,6 +119,28 @@ void afe_loopback(int enable)
 }
 EXPORT_SYMBOL(afe_loopback);
 
+void afe_ext_loopback(int enable, int rx_copp_id, int tx_copp_id)
+{
+	struct afe_cmd_ext_loopback cmd;
+	struct msm_afe_state *afe;
+
+	afe = &the_afe_state;
+	MM_DBG("enable %d\n", enable);
+	if ((rx_copp_id == 0) && (tx_copp_id == 0)) {
+		afe_loopback(enable);
+	} else {
+		memset(&cmd, 0, sizeof(cmd));
+		cmd.cmd_id = AFE_CMD_EXT_LOOPBACK;
+		cmd.source_id = tx_copp_id;
+		cmd.dst_id = rx_copp_id;
+		if (enable)
+			cmd.enable_flag = AFE_LOOPBACK_ENABLE_COMMAND;
+
+		afe_send_queue(afe, &cmd, sizeof(cmd));
+	}
+}
+EXPORT_SYMBOL(afe_ext_loopback);
+
 void afe_device_volume_ctrl(u16 device_id, u16 device_volume)
 {
 	struct afe_cmd_device_volume_ctrl cmd;
@@ -178,6 +195,7 @@ int afe_enable(u8 path_id, struct msm_afe_config *config)
 				msm_adsp_disable(afe->mod);
 				msm_adsp_put(afe->mod);
 				afe->aux_conf_flag = 0;
+				afe->mod = NULL;
 			}
 		}
 
@@ -191,6 +209,7 @@ int afe_enable(u8 path_id, struct msm_afe_config *config)
 
 error_adsp_enable:
 	msm_adsp_put(afe->mod);
+	afe->mod = NULL;
 error_adsp_get:
 	mutex_unlock(&afe->lock);
 	return rc;
@@ -231,6 +250,7 @@ int afe_config_fm_codec(int fm_enable, uint16_t source)
 	return rc;
 error_adsp_enable:
 	msm_adsp_put(afe->mod);
+	afe->mod = NULL;
 error_adsp_get:
 	mutex_unlock(&afe->lock);
 	return rc;
@@ -266,6 +286,7 @@ int afe_config_fm_volume(uint16_t volume)
 	return rc;
 error_adsp_enable:
 	msm_adsp_put(afe->mod);
+	afe->mod = NULL;
 error_adsp_get:
 	mutex_unlock(&afe->lock);
 	return rc;
@@ -304,6 +325,7 @@ int afe_config_fm_calibration_gain(uint16_t device_id,
 	return rc;
 error_adsp_enable:
 	msm_adsp_put(afe->mod);
+	afe->mod = NULL;
 error_adsp_get:
 	mutex_unlock(&afe->lock);
 	return rc;
@@ -345,6 +367,7 @@ int afe_config_aux_codec(int pcm_ctl_value, int aux_codec_intf_value,
 	return rc;
 error_adsp_enable:
 	msm_adsp_put(afe->mod);
+	afe->mod = NULL;
 error_adsp_get:
 	mutex_unlock(&afe->lock);
 	return rc;
@@ -361,7 +384,7 @@ int afe_config_rmc_block(struct acdb_rmc_block *acdb_rmc)
 
 	MM_DBG(" configure rmc block\n");
 	mutex_lock(&afe->lock);
-	if (!afe->in_use) {
+	if (!afe->in_use && !afe->mod) {
 		/* enable afe */
 		rc = msm_adsp_get("AFETASK", &afe->mod, &afe->adsp_ops, afe);
 		if (rc < 0) {
@@ -393,6 +416,7 @@ int afe_config_rmc_block(struct acdb_rmc_block *acdb_rmc)
 	return rc;
 error_adsp_enable:
 	msm_adsp_put(afe->mod);
+	afe->mod = NULL;
 error_adsp_get:
 	mutex_unlock(&afe->lock);
 	return rc;
@@ -424,6 +448,7 @@ int afe_disable(u8 path_id)
 		msm_adsp_disable(afe->mod);
 		msm_adsp_put(afe->mod);
 		afe->aux_conf_flag = 0;
+		afe->mod = NULL;
 	}
 	mutex_unlock(&afe->lock);
 	return rc;

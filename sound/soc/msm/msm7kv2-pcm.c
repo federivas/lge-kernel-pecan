@@ -479,8 +479,8 @@ static int msm_pcm_playback_copy(struct snd_pcm_substream *substream, int a,
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct msm_audio *prtd = runtime->private_data;
 
-	MM_DBG("%d\n", fbytes);
 	fbytes = frames_to_bytes(runtime, frames);
+	MM_DBG("%d\n", fbytes);
 	ret = alsa_send_buffer(prtd, buf, fbytes, NULL);
 	++copy_count;
 	prtd->pcm_buf_pos += fbytes;
@@ -539,8 +539,8 @@ static int msm_pcm_capture_copy(struct snd_pcm_substream *substream,
 	if (prtd->abort)
 		return -EPERM;
 
-	MM_DBG("%d\n", fbytes);
 	fbytes = frames_to_bytes(runtime, frames);
+	MM_DBG("%d\n", fbytes);
 	monofbytes = fbytes / 2;
 	if (runtime->channels == 2) {
 		ret = alsa_buffer_read(prtd, buf, fbytes, NULL);
@@ -616,7 +616,7 @@ static snd_pcm_uframes_t msm_pcm_pointer(struct snd_pcm_substream *substream)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct msm_audio *prtd = runtime->private_data;
 
-	MM_DBG("\n");
+	MM_DBG("pcm_irq_pos = %d\n", prtd->pcm_irq_pos);
 	if (prtd->pcm_irq_pos == prtd->pcm_size)
 		prtd->pcm_irq_pos = 0;
 	return bytes_to_frames(runtime, (prtd->pcm_irq_pos));
@@ -656,17 +656,6 @@ static struct snd_pcm_ops msm_pcm_ops = {
 	.pointer        = msm_pcm_pointer,
 	.mmap           = msm_pcm_mmap,
 };
-
-
-
-static int msm_pcm_remove(struct platform_device *devptr)
-{
-	struct snd_soc_device *socdev = platform_get_drvdata(devptr);
-	snd_soc_free_pcms(socdev);
-	kfree(socdev->card->codec);
-	platform_set_drvdata(devptr, NULL);
-	return 0;
-}
 
 static int pcm_preallocate_buffer(struct snd_pcm *pcm,
 	int stream)
@@ -712,12 +701,11 @@ static void msm_pcm_free_buffers(struct snd_pcm *pcm)
 	}
 }
 
-static int msm_pcm_new(struct snd_card *card,
-			struct snd_soc_dai *codec_dai,
-			struct snd_pcm *pcm)
+static int msm_pcm_new(struct snd_soc_pcm_runtime *rtd)
 {
 	int ret = 0;
-
+	struct snd_card *card = rtd->card->snd_card;
+	struct snd_pcm *pcm = rtd->pcm;
 
 	ret = snd_pcm_new_stream(pcm, SNDRV_PCM_STREAM_PLAYBACK, 1);
 	if (ret)
@@ -742,24 +730,43 @@ static int msm_pcm_new(struct snd_card *card,
 	return ret;
 }
 
-struct snd_soc_platform msm_soc_platform = {
-	.name		= "msm-audio",
-	.remove         = msm_pcm_remove,
-	.pcm_ops	= &msm_pcm_ops,
+struct snd_soc_platform_driver msm_soc_platform = {
+	.ops            = &msm_pcm_ops,
 	.pcm_new	= msm_pcm_new,
 	.pcm_free	= msm_pcm_free_buffers,
 };
 EXPORT_SYMBOL(msm_soc_platform);
 
+static __devinit int msm_pcm_probe(struct platform_device *pdev)
+{
+	return snd_soc_register_platform(&pdev->dev,
+				&msm_soc_platform);
+}
+
+static int msm_pcm_remove(struct platform_device *pdev)
+{
+	snd_soc_unregister_platform(&pdev->dev);
+	return 0;
+}
+
+static struct platform_driver msm_pcm_driver = {
+	.driver = {
+		.name = "msm-dsp-audio",
+		.owner = THIS_MODULE,
+	},
+	.probe = msm_pcm_probe,
+	.remove = __devexit_p(msm_pcm_remove),
+};
+
 static int __init msm_soc_platform_init(void)
 {
-	return snd_soc_register_platform(&msm_soc_platform);
+	return platform_driver_register(&msm_pcm_driver);
 }
 module_init(msm_soc_platform_init);
 
 static void __exit msm_soc_platform_exit(void)
 {
-	snd_soc_unregister_platform(&msm_soc_platform);
+	 platform_driver_unregister(&msm_pcm_driver);
 }
 module_exit(msm_soc_platform_exit);
 

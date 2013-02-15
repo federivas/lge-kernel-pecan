@@ -8,11 +8,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
  */
 
 #include <linux/kernel.h>
@@ -22,12 +17,18 @@
 #include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/slab.h>
+#include <linux/clk.h>
+#include <linux/timer.h>
+#include <linux/jiffies.h>
 
 #include <mach/scm.h>
 #include <mach/msm_iomap.h>
+#include <mach/msm_xo.h>
 
 #include "peripheral-loader.h"
-#include "clock-8x60.h"
+#include "scm-pas.h"
+
+#define PROXY_VOTE_TIMEOUT		10000
 
 #define MSM_MMS_REGS_BASE		0x10200000
 #define MSM_LPASS_QDSP6SS_BASE		0x28800000
@@ -63,264 +64,228 @@
 #define PPSS_PROC_CLK_CTL		(MSM_CLK_CTL_BASE + 0x2588)
 #define CLK_HALT_DFAB_STATE		(MSM_CLK_CTL_BASE + 0x2FC8)
 
-#define PAS_MODEM	0
-#define PAS_Q6		1
-#define PAS_DSPS	2
-
-#define PAS_INIT_IMAGE_CMD	1
-#define PAS_MEM_CMD		2
-#define PAS_AUTH_AND_RESET_CMD	5
-#define PAS_SHUTDOWN_CMD	6
-
-struct pas_init_image_req {
-	u32	proc;
-	u32	image_addr;
-};
-
-struct pas_init_image_resp {
-	u32	image_valid;
-};
-
-struct pas_auth_image_req {
-	u32	proc;
-};
-
-struct pas_auth_image_resp {
-	u32	reset_initiated;
-};
-
-struct pas_shutdown_req {
-	u32	proc;
-};
-
-struct pas_shutdown_resp {
-	u32	success;
-};
-
 static int modem_start, q6_start, dsps_start;
 static void __iomem *msm_mms_regs_base;
 static void __iomem *msm_lpass_qdsp6ss_base;
 
-static int init_image_trusted(int id, const u8 *metadata, size_t size)
+static int init_image_modem_trusted(struct pil_device *pil, const u8 *metadata,
+				    size_t size)
 {
-	int ret;
-	struct pas_init_image_req request;
-	struct pas_init_image_resp resp = {0};
-	void *mdata_buf;
-
-	/* Make memory physically contiguous */
-	mdata_buf = kmemdup(metadata, size, GFP_KERNEL);
-	if (!mdata_buf)
-		return -ENOMEM;
-
-	request.proc = id;
-	request.image_addr = virt_to_phys(mdata_buf);
-
-	ret = scm_call(SCM_SVC_PIL, PAS_INIT_IMAGE_CMD, &request,
-			sizeof(request), &resp, sizeof(resp));
-	kfree(mdata_buf);
-
-	if (ret)
-		return ret;
-	return resp.image_valid;
+	return pas_init_image(PAS_MODEM, metadata, size);
 }
 
-static int init_image_modem_trusted(const u8 *metadata, size_t size)
-{
-	return init_image_trusted(PAS_MODEM, metadata, size);
-}
-
-static int init_image_modem_untrusted(const u8 *metadata, size_t size)
+static int init_image_modem_untrusted(struct pil_device *pil,
+				      const u8 *metadata, size_t size)
 {
 	struct elf32_hdr *ehdr = (struct elf32_hdr *)metadata;
 	modem_start = ehdr->e_entry;
 	return 0;
 }
 
-static int init_image_q6_trusted(const u8 *metadata, size_t size)
+static int init_image_q6_trusted(struct pil_device *pil,
+				 const u8 *metadata, size_t size)
 {
-	return init_image_trusted(PAS_Q6, metadata, size);
+	return pas_init_image(PAS_Q6, metadata, size);
 }
 
-static int init_image_q6_untrusted(const u8 *metadata, size_t size)
+static int init_image_q6_untrusted(struct pil_device *pil, const u8 *metadata,
+				   size_t size)
 {
 	struct elf32_hdr *ehdr = (struct elf32_hdr *)metadata;
 	q6_start = ehdr->e_entry;
 	return 0;
 }
 
-static int init_image_dsps_trusted(const u8 *metadata, size_t size)
+static int init_image_dsps_trusted(struct pil_device *pil, const u8 *metadata,
+				   size_t size)
 {
-	return init_image_trusted(PAS_DSPS, metadata, size);
+	return pas_init_image(PAS_DSPS, metadata, size);
 }
 
-static int init_image_dsps_untrusted(const u8 *metadata, size_t size)
+static int init_image_dsps_untrusted(struct pil_device *pil, const u8 *metadata,
+				     size_t size)
 {
 	struct elf32_hdr *ehdr = (struct elf32_hdr *)metadata;
 	dsps_start = ehdr->e_entry;
 	/* Bring memory and bus interface out of reset */
-	writel(0x2, PPSS_RESET);
-	dsb();
+	__raw_writel(0x2, PPSS_RESET);
+	mb();
 	return 0;
 }
 
-static int verify_blob(u32 phy_addr, size_t size)
+static int verify_blob(struct pil_device *pil, u32 phy_addr, size_t size)
 {
 	return 0;
 }
 
-static int auth_and_reset_trusted(int id)
+static struct msm_xo_voter *pxo;
+static void remove_modem_proxy_votes(unsigned long data)
 {
-	int ret;
-	struct pas_auth_image_req request;
-	struct pas_auth_image_resp resp = {0};
+	msm_xo_mode_vote(pxo, MSM_XO_MODE_OFF);
+}
+static DEFINE_TIMER(modem_timer, remove_modem_proxy_votes, 0, 0);
 
-	request.proc = id;
-	ret = scm_call(SCM_SVC_PIL, PAS_AUTH_AND_RESET_CMD, &request,
-			sizeof(request), &resp, sizeof(resp));
-	if (ret)
-		return ret;
-
-	return resp.reset_initiated;
+static void make_modem_proxy_votes(void)
+{
+	/* Make proxy votes for modem and set up timer to disable it. */
+	msm_xo_mode_vote(pxo, MSM_XO_MODE_ON);
+	mod_timer(&modem_timer, jiffies + msecs_to_jiffies(PROXY_VOTE_TIMEOUT));
 }
 
-static int reset_modem_untrusted(void)
+static void remove_modem_proxy_votes_now(void)
+{
+	/*
+	 * If the modem proxy vote hasn't been removed yet, them remove the
+	 * votes immediately.
+	 */
+	if (del_timer(&modem_timer))
+		remove_modem_proxy_votes(0);
+}
+
+static int reset_modem_untrusted(struct pil_device *pil)
 {
 	u32 reg;
 
+	make_modem_proxy_votes();
+
 	/* Put modem AHB0,1,2 clocks into reset */
-	writel(BIT(0) | BIT(1), MAHB0_SFAB_PORT_RESET);
-	writel(BIT(7), MAHB1_CLK_CTL);
-	writel(BIT(7), MAHB2_CLK_CTL);
+	__raw_writel(BIT(0) | BIT(1), MAHB0_SFAB_PORT_RESET);
+	__raw_writel(BIT(7), MAHB1_CLK_CTL);
+	__raw_writel(BIT(7), MAHB2_CLK_CTL);
 
 	/* Vote for pll8 on behalf of the modem */
-	reg = readl(PLL_ENA_MARM);
+	reg = __raw_readl(PLL_ENA_MARM);
 	reg |= BIT(8);
-	writel(reg, PLL_ENA_MARM);
+	__raw_writel(reg, PLL_ENA_MARM);
 
 	/* Wait for PLL8 to enable */
-	while (!(readl(PLL8_STATUS) & BIT(16)))
+	while (!(__raw_readl(PLL8_STATUS) & BIT(16)))
 		cpu_relax();
 
 	/* Set MAHB1 divider to Div-5 to run MAHB1,2 and sfab at 79.8 Mhz*/
-	writel(0x4, MAHB1_NS);
+	__raw_writel(0x4, MAHB1_NS);
 
 	/* Vote for modem AHB1 and 2 clocks to be on on behalf of the modem */
-	reg = readl(MARM_CLK_BRANCH_ENA_VOTE);
+	reg = __raw_readl(MARM_CLK_BRANCH_ENA_VOTE);
 	reg |= BIT(0) | BIT(1);
-	writel(reg, MARM_CLK_BRANCH_ENA_VOTE);
+	__raw_writel(reg, MARM_CLK_BRANCH_ENA_VOTE);
 
 	/* Source marm_clk off of PLL8 */
-	reg = readl(MARM_CLK_SRC_CTL);
+	reg = __raw_readl(MARM_CLK_SRC_CTL);
 	if ((reg & 0x1) == 0) {
-		writel(0x3, MARM_CLK_SRC1_NS);
+		__raw_writel(0x3, MARM_CLK_SRC1_NS);
 		reg |= 0x1;
 	} else {
-		writel(0x3, MARM_CLK_SRC0_NS);
+		__raw_writel(0x3, MARM_CLK_SRC0_NS);
 		reg &= ~0x1;
 	}
-	writel(reg | 0x2, MARM_CLK_SRC_CTL);
+	__raw_writel(reg | 0x2, MARM_CLK_SRC_CTL);
 
 	/*
 	 * Force core on and periph on signals to remain active during halt
 	 * for marm_clk and mahb2_clk
 	 */
-	writel(0x6F, MARM_CLK_FS);
-	writel(0x6F, MAHB2_CLK_FS);
+	__raw_writel(0x6F, MARM_CLK_FS);
+	__raw_writel(0x6F, MAHB2_CLK_FS);
 
 	/*
 	 * Enable all of the marm_clk branches, cxo sourced marm branches,
 	 * and sleep clock branches
 	 */
-	writel(0x10, MARM_CLK_CTL);
-	writel(0x10, MAHB0_CLK_CTL);
-	writel(0x10, SFAB_MSS_S_HCLK_CTL);
-	writel(0x10, MSS_MODEM_CXO_CLK_CTL);
-	writel(0x10, MSS_SLP_CLK_CTL);
-	writel(0x10, MSS_MARM_SYS_REF_CLK_CTL);
-
-	/* Take MAHB0,1,2 clocks out of reset */
-	writel(0x0, MAHB2_CLK_CTL);
-	writel(0x0, MAHB1_CLK_CTL);
-	writel(0x0, MAHB0_SFAB_PORT_RESET);
+	__raw_writel(0x10, MARM_CLK_CTL);
+	__raw_writel(0x10, MAHB0_CLK_CTL);
+	__raw_writel(0x10, SFAB_MSS_S_HCLK_CTL);
+	__raw_writel(0x10, MSS_MODEM_CXO_CLK_CTL);
+	__raw_writel(0x10, MSS_SLP_CLK_CTL);
+	__raw_writel(0x10, MSS_MARM_SYS_REF_CLK_CTL);
 
 	/* Wait for above clocks to be turned on */
-	while (readl(CLK_HALT_MSS_SMPSS_MISC_STATE) & (BIT(7) | BIT(8) |
+	while (__raw_readl(CLK_HALT_MSS_SMPSS_MISC_STATE) & (BIT(7) | BIT(8) |
 				BIT(9) | BIT(10) | BIT(4) | BIT(6)))
 		cpu_relax();
 
+	/* Take MAHB0,1,2 clocks out of reset */
+	__raw_writel(0x0, MAHB2_CLK_CTL);
+	__raw_writel(0x0, MAHB1_CLK_CTL);
+	__raw_writel(0x0, MAHB0_SFAB_PORT_RESET);
+
 	/* Setup exception vector table base address */
-	writel(modem_start | 0x1, MARM_BOOT_CONTROL);
+	__raw_writel(modem_start | 0x1, MARM_BOOT_CONTROL);
 
 	/* Wait for vector table to be setup */
-	dsb();
+	mb();
 
 	/* Bring modem out of reset */
-	writel(0x0, MARM_RESET);
+	__raw_writel(0x0, MARM_RESET);
 
 	return 0;
 }
 
-static int reset_modem_trusted(void)
-{
-	return auth_and_reset_trusted(PAS_MODEM);
-}
-
-static int shutdown_trusted(int id)
+static int reset_modem_trusted(struct pil_device *pil)
 {
 	int ret;
-	struct pas_shutdown_req request;
-	struct pas_shutdown_resp resp = {0};
 
-	request.proc = id;
-	ret = scm_call(SCM_SVC_PIL, PAS_SHUTDOWN_CMD, &request, sizeof(request),
-			&resp, sizeof(resp));
+	make_modem_proxy_votes();
+
+	ret = pas_auth_and_reset(PAS_MODEM);
 	if (ret)
-		return ret;
+		remove_modem_proxy_votes_now();
 
-	return resp.success;
+	return ret;
 }
 
-static int shutdown_modem_untrusted(void)
+static int shutdown_modem_untrusted(struct pil_device *pil)
 {
 	u32 reg;
 
 	/* Put modem into reset */
-	writel(0x1, MARM_RESET);
-	dsb();
+	__raw_writel(0x1, MARM_RESET);
+	mb();
 
 	/* Put modem AHB0,1,2 clocks into reset */
-	writel(BIT(0) | BIT(1), MAHB0_SFAB_PORT_RESET);
-	writel(BIT(7), MAHB1_CLK_CTL);
-	writel(BIT(7), MAHB2_CLK_CTL);
+	__raw_writel(BIT(0) | BIT(1), MAHB0_SFAB_PORT_RESET);
+	__raw_writel(BIT(7), MAHB1_CLK_CTL);
+	__raw_writel(BIT(7), MAHB2_CLK_CTL);
+	mb();
 
 	/*
 	 * Disable all of the marm_clk branches, cxo sourced marm branches,
 	 * and sleep clock branches
 	 */
-	writel(0x0, MARM_CLK_CTL);
-	writel(0x0, MAHB0_CLK_CTL);
-	writel(0x0, SFAB_MSS_S_HCLK_CTL);
-	writel(0x0, MSS_MODEM_CXO_CLK_CTL);
-	writel(0x0, MSS_SLP_CLK_CTL);
-	writel(0x0, MSS_MARM_SYS_REF_CLK_CTL);
+	__raw_writel(0x0, MARM_CLK_CTL);
+	__raw_writel(0x0, MAHB0_CLK_CTL);
+	__raw_writel(0x0, SFAB_MSS_S_HCLK_CTL);
+	__raw_writel(0x0, MSS_MODEM_CXO_CLK_CTL);
+	__raw_writel(0x0, MSS_SLP_CLK_CTL);
+	__raw_writel(0x0, MSS_MARM_SYS_REF_CLK_CTL);
 
 	/* Disable marm_clk */
-	reg = readl(MARM_CLK_SRC_CTL);
+	reg = __raw_readl(MARM_CLK_SRC_CTL);
 	reg &= ~0x2;
-	writel(reg, MARM_CLK_SRC_CTL);
+	__raw_writel(reg, MARM_CLK_SRC_CTL);
 
 	/* Clear modem's votes for ahb clocks */
-	writel(0x0, MARM_CLK_BRANCH_ENA_VOTE);
+	__raw_writel(0x0, MARM_CLK_BRANCH_ENA_VOTE);
 
 	/* Clear modem's votes for PLLs */
-	writel(0x0, PLL_ENA_MARM);
+	__raw_writel(0x0, PLL_ENA_MARM);
+
+	remove_modem_proxy_votes_now();
+
 	return 0;
 }
 
-static int shutdown_modem_trusted(void)
+static int shutdown_modem_trusted(struct pil_device *pil)
 {
-	return shutdown_trusted(PAS_MODEM);
+	int ret;
+
+	ret = pas_shutdown(PAS_MODEM);
+	if (ret)
+		return ret;
+
+	remove_modem_proxy_votes_now();
+
+	return 0;
 }
 
 #define LV_EN 			BIT(27)
@@ -353,21 +318,43 @@ static int shutdown_modem_trusted(void)
 #define Q6_STRAP_TCM_BASE	(0x28C << 15)
 #define Q6_STRAP_TCM_CONFIG	0x28B
 
-static int reset_q6_untrusted(void)
+static struct clk *pll4;
+
+static void remove_q6_proxy_votes(unsigned long data)
 {
-	int ret;
+	clk_disable(pll4);
+}
+static DEFINE_TIMER(q6_timer, remove_q6_proxy_votes, 0, 0);
+
+static void make_q6_proxy_votes(void)
+{
+	/* Make proxy votes for Q6 and set up timer to disable it. */
+	clk_enable(pll4);
+	mod_timer(&q6_timer, jiffies + msecs_to_jiffies(PROXY_VOTE_TIMEOUT));
+}
+
+static void remove_q6_proxy_votes_now(void)
+{
+	/*
+	 * If the Q6 proxy vote hasn't been removed yet, them remove the
+	 * votes immediately.
+	 */
+	if (del_timer(&q6_timer))
+		remove_q6_proxy_votes(0);
+}
+
+static int reset_q6_untrusted(struct pil_device *pil)
+{
 	u32 reg;
 
-	ret = local_src_enable(PLL_4);
-	if (ret)
-		goto err;
+	make_q6_proxy_votes();
 
 	/* Put Q6 into reset */
-	reg = readl(LCC_Q6_FUNC);
+	reg = __raw_readl(LCC_Q6_FUNC);
 	reg |= Q6SS_SS_ARES | Q6SS_ISDB_ARES | Q6SS_ETM_ARES | STOP_CORE |
 		CORE_ARES;
 	reg &= ~CORE_GFM4_CLK_EN;
-	writel(reg, LCC_Q6_FUNC);
+	__raw_writel(reg, LCC_Q6_FUNC);
 
 	/* Wait 8 AHB cycles for Q6 to be fully reset (AHB = 1.5Mhz) */
 	usleep_range(20, 30);
@@ -375,91 +362,122 @@ static int reset_q6_untrusted(void)
 	/* Turn on Q6 memory */
 	reg |= CORE_GFM4_CLK_EN | CORE_L1_MEM_CORE_EN | CORE_TCM_MEM_CORE_EN |
 		CORE_TCM_MEM_PERPH_EN;
-	writel(reg, LCC_Q6_FUNC);
+	__raw_writel(reg, LCC_Q6_FUNC);
 
 	/* Turn on Q6 core clocks and take core out of reset */
 	reg &= ~(CLAMP_IO | Q6SS_SS_ARES | Q6SS_ISDB_ARES | Q6SS_ETM_ARES |
 			CORE_ARES);
-	writel(reg, LCC_Q6_FUNC);
+	__raw_writel(reg, LCC_Q6_FUNC);
 
 	/* Wait for clocks to be enabled */
-	dsb();
+	mb();
 	/* Program boot address */
-	writel((q6_start >> 12) & 0xFFFFF, QDSP6SS_RST_EVB);
+	__raw_writel((q6_start >> 12) & 0xFFFFF, QDSP6SS_RST_EVB);
 
-	writel(Q6_STRAP_TCM_CONFIG | Q6_STRAP_TCM_BASE,
+	__raw_writel(Q6_STRAP_TCM_CONFIG | Q6_STRAP_TCM_BASE,
 			QDSP6SS_STRAP_TCM);
-	writel(Q6_STRAP_AHB_UPPER | Q6_STRAP_AHB_LOWER,
+	__raw_writel(Q6_STRAP_AHB_UPPER | Q6_STRAP_AHB_LOWER,
 			QDSP6SS_STRAP_AHB);
 
 	/* Wait for addresses to be programmed before starting Q6 */
-	dsb();
+	mb();
 
 	/* Start Q6 instruction execution */
 	reg &= ~STOP_CORE;
-	writel(reg, LCC_Q6_FUNC);
+	__raw_writel(reg, LCC_Q6_FUNC);
 
 	return 0;
-
-err:
-	return ret;
 }
 
-static int reset_q6_trusted(void)
+static int reset_q6_trusted(struct pil_device *pil)
 {
-	int ret;
+	make_q6_proxy_votes();
 
-	ret = local_src_enable(PLL_4);
-	if (ret)
-		return ret;
-
-	return auth_and_reset_trusted(PAS_Q6);
+	return pas_auth_and_reset(PAS_Q6);
 }
 
-static int shutdown_q6_untrusted(void)
+static int shutdown_q6_untrusted(struct pil_device *pil)
 {
 	u32 reg;
 
-	reg = readl(LCC_Q6_FUNC);
-	/* Halt clocks and turn off memory */
+	/* Put Q6 into reset */
+	reg = __raw_readl(LCC_Q6_FUNC);
+	reg |= Q6SS_SS_ARES | Q6SS_ISDB_ARES | Q6SS_ETM_ARES | STOP_CORE |
+		CORE_ARES;
+	reg &= ~CORE_GFM4_CLK_EN;
+	__raw_writel(reg, LCC_Q6_FUNC);
+
+	/* Wait 8 AHB cycles for Q6 to be fully reset (AHB = 1.5Mhz) */
+	usleep_range(20, 30);
+
+	/* Turn off Q6 memory */
 	reg &= ~(CORE_L1_MEM_CORE_EN | CORE_TCM_MEM_CORE_EN |
 		CORE_TCM_MEM_PERPH_EN);
-	reg |= CLAMP_IO | CORE_GFM4_CLK_EN;
-	writel(reg, LCC_Q6_FUNC);
+	__raw_writel(reg, LCC_Q6_FUNC);
+
+	reg |= CLAMP_IO;
+	__raw_writel(reg, LCC_Q6_FUNC);
+
+	remove_q6_proxy_votes_now();
+
 	return 0;
 }
 
-static int shutdown_q6_trusted(void)
+static int shutdown_q6_trusted(struct pil_device *pil)
 {
-	return shutdown_trusted(PAS_Q6);
+	int ret;
+
+	ret = pas_shutdown(PAS_Q6);
+	if (ret)
+		return ret;
+
+	remove_q6_proxy_votes_now();
+
+	return 0;
 }
 
-static int reset_dsps_untrusted(void)
+static int reset_dsps_untrusted(struct pil_device *pil)
 {
-	writel(0x10, PPSS_PROC_CLK_CTL);
-	while (readl(CLK_HALT_DFAB_STATE) & BIT(18))
+	__raw_writel(0x10, PPSS_PROC_CLK_CTL);
+	while (__raw_readl(CLK_HALT_DFAB_STATE) & BIT(18))
 		cpu_relax();
 
 	/* Bring DSPS out of reset */
-	writel(0x0, PPSS_RESET);
+	__raw_writel(0x0, PPSS_RESET);
 	return 0;
 }
 
-static int reset_dsps_trusted(void)
+static int reset_dsps_trusted(struct pil_device *pil)
 {
-	return auth_and_reset_trusted(PAS_DSPS);
+	return pas_auth_and_reset(PAS_DSPS);
 }
 
-static int shutdown_dsps_trusted(void)
+static int shutdown_dsps_trusted(struct pil_device *pil)
 {
-	return shutdown_trusted(PAS_DSPS);
+	return pas_shutdown(PAS_DSPS);
 }
 
-static int shutdown_dsps_untrusted(void)
+static int shutdown_dsps_untrusted(struct pil_device *pil)
 {
-	writel(0x2, PPSS_RESET);
-	writel(0x0, PPSS_PROC_CLK_CTL);
+	__raw_writel(0x2, PPSS_RESET);
+	__raw_writel(0x0, PPSS_PROC_CLK_CTL);
 	return 0;
+}
+
+static int init_image_playready(struct pil_device *pil, const u8 *metadata,
+		size_t size)
+{
+	return pas_init_image(PAS_PLAYREADY, metadata, size);
+}
+
+static int reset_playready(struct pil_device *pil)
+{
+	return pas_auth_and_reset(PAS_PLAYREADY);
+}
+
+static int shutdown_playready(struct pil_device *pil)
+{
+	return pas_shutdown(PAS_PLAYREADY);
 }
 
 struct pil_reset_ops pil_modem_ops = {
@@ -483,6 +501,13 @@ struct pil_reset_ops pil_dsps_ops = {
 	.shutdown = shutdown_dsps_untrusted,
 };
 
+struct pil_reset_ops pil_playready_ops = {
+	.init_image = init_image_playready,
+	.verify_blob = verify_blob,
+	.auth_and_reset = reset_playready,
+	.shutdown = shutdown_playready,
+};
+
 static struct pil_device peripherals[] = {
 	{
 		.name = "modem",
@@ -502,21 +527,23 @@ static struct pil_device peripherals[] = {
 		.ops = &pil_q6_ops,
 	},
 	{
-		.name = "dsps",
+		.name = "tzapps",
 		.pdev = {
-			.name = "pil_dsps",
+			.name = "pil_playready",
 			.id = -1,
 		},
-		.ops = &pil_dsps_ops,
+		.ops = &pil_playready_ops,
 	},
 };
 
-
-#ifdef CONFIG_MSM_SECURE_PIL
-#define SECURE_PIL 1
-#else
-#define SECURE_PIL 0
-#endif
+struct pil_device peripheral_dsps = {
+	.name = "dsps",
+	.pdev = {
+		.name = "pil_dsps",
+		.id = -1,
+	},
+	.ops = &pil_dsps_ops,
+};
 
 static int __init msm_peripheral_reset_init(void)
 {
@@ -530,15 +557,27 @@ static int __init msm_peripheral_reset_init(void)
 	if (!msm_lpass_qdsp6ss_base)
 		goto err_lpass;
 
-	if (SECURE_PIL) {
+	pxo = msm_xo_get(MSM_XO_PXO, "pil");
+	if (IS_ERR(pxo))
+		goto err_pxo;
+
+	pll4 = clk_get_sys("peripheral-reset", "pll4");
+	if (IS_ERR(pll4))
+		goto err_clk;
+
+	if (pas_supported(PAS_MODEM) > 0) {
 		pil_modem_ops.init_image = init_image_modem_trusted;
 		pil_modem_ops.auth_and_reset = reset_modem_trusted;
 		pil_modem_ops.shutdown = shutdown_modem_trusted;
+	}
 
+	if (pas_supported(PAS_Q6) > 0) {
 		pil_q6_ops.init_image = init_image_q6_trusted;
 		pil_q6_ops.auth_and_reset = reset_q6_trusted;
 		pil_q6_ops.shutdown = shutdown_q6_trusted;
+	}
 
+	if (pas_supported(PAS_DSPS) > 0) {
 		pil_dsps_ops.init_image = init_image_dsps_trusted;
 		pil_dsps_ops.auth_and_reset = reset_dsps_trusted;
 		pil_dsps_ops.shutdown = shutdown_dsps_trusted;
@@ -549,6 +588,10 @@ static int __init msm_peripheral_reset_init(void)
 
 	return 0;
 
+err_clk:
+	msm_xo_put(pxo);
+err_pxo:
+	iounmap(msm_lpass_qdsp6ss_base);
 err_lpass:
 	iounmap(msm_mms_regs_base);
 err:

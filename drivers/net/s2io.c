@@ -1,6 +1,6 @@
 /************************************************************************
  * s2io.c: A Linux PCI-X Ethernet driver for Neterion 10GbE Server NIC
- * Copyright(c) 2002-2007 Neterion Inc.
+ * Copyright(c) 2002-2010 Exar Corp.
  *
  * This software may be used and distributed according to the terms of
  * the GNU General Public License (GPL), incorporated herein by reference.
@@ -38,8 +38,6 @@
  * Tx descriptors that can be associated with each corresponding FIFO.
  * intr_type: This defines the type of interrupt. The values can be 0(INTA),
  *     2(MSI_X). Default value is '2(MSI_X)'
- * lro_enable: Specifies whether to enable Large Receive Offload (LRO) or not.
- *     Possible values '1' for enable '0' for disable. Default is '0'
  * lro_max_pkts: This parameter defines maximum number of packets can be
  *     aggregated as a single large packet
  * napi: This parameter used to enable/disable NAPI (polling Rx)
@@ -90,14 +88,14 @@
 #include "s2io.h"
 #include "s2io-regs.h"
 
-#define DRV_VERSION "2.0.26.25"
+#define DRV_VERSION "2.0.26.28"
 
 /* S2io Driver name & version. */
-static char s2io_driver_name[] = "Neterion";
-static char s2io_driver_version[] = DRV_VERSION;
+static const char s2io_driver_name[] = "Neterion";
+static const char s2io_driver_version[] = DRV_VERSION;
 
-static int rxd_size[2] = {32, 48};
-static int rxd_count[2] = {127, 85};
+static const int rxd_size[2] = {32, 48};
+static const int rxd_count[2] = {127, 85};
 
 static inline int RXD_IS_UP2DT(struct RxD_t *rxdp)
 {
@@ -496,8 +494,6 @@ S2IO_PARM_INT(rxsync_frequency, 3);
 /* Interrupt type. Values can be 0(INTA), 2(MSI_X) */
 S2IO_PARM_INT(intr_type, 2);
 /* Large receive offload feature */
-static unsigned int lro_enable;
-module_param_named(lro, lro_enable, uint, 0);
 
 /* Max pkts to be aggregated by LRO at one time. If not specified,
  * aggregation happens until we hit max IP pkt size(64K)
@@ -795,7 +791,6 @@ static int init_shared_mem(struct s2io_nic *nic)
 		ring->rx_curr_put_info.ring_len = rx_cfg->num_rxd - 1;
 		ring->nic = nic;
 		ring->ring_no = i;
-		ring->lro = lro_enable;
 
 		blk_cnt = rx_cfg->num_rxd / (rxd_count[nic->rxd_mode] + 1);
 		/*  Allocating all the Rx blocks */
@@ -3603,10 +3598,12 @@ static int s2io_set_swapper(struct s2io_nic *sp)
 	val64 = readq(&bar0->pif_rd_swapper_fb);
 	if (val64 != 0x0123456789ABCDEFULL) {
 		int i = 0;
-		u64 value[] = { 0xC30000C3C30000C3ULL,   /* FE=1, SE=1 */
-				0x8100008181000081ULL,  /* FE=1, SE=0 */
-				0x4200004242000042ULL,  /* FE=0, SE=1 */
-				0};                     /* FE=0, SE=0 */
+		static const u64 value[] = {
+			0xC30000C3C30000C3ULL,	/* FE=1, SE=1 */
+			0x8100008181000081ULL,	/* FE=1, SE=0 */
+			0x4200004242000042ULL,	/* FE=0, SE=1 */
+			0			/* FE=0, SE=0 */
+		};
 
 		while (i < 4) {
 			writeq(value[i], &bar0->swapper_ctrl);
@@ -3632,10 +3629,12 @@ static int s2io_set_swapper(struct s2io_nic *sp)
 
 	if (val64 != valt) {
 		int i = 0;
-		u64 value[] = { 0x00C3C30000C3C300ULL,  /* FE=1, SE=1 */
-				0x0081810000818100ULL,  /* FE=1, SE=0 */
-				0x0042420000424200ULL,  /* FE=0, SE=1 */
-				0};                     /* FE=0, SE=0 */
+		static const u64 value[] = {
+			0x00C3C30000C3C300ULL,	/* FE=1, SE=1 */
+			0x0081810000818100ULL,	/* FE=1, SE=0 */
+			0x0042420000424200ULL,	/* FE=0, SE=1 */
+			0			/* FE=0, SE=0 */
+		};
 
 		while (i < 4) {
 			writeq((value[i] | valr), &bar0->swapper_ctrl);
@@ -4106,7 +4105,7 @@ static netdev_tx_t s2io_xmit(struct sk_buff *skb, struct net_device *dev)
 	}
 
 	queue = 0;
-	if (sp->vlgrp && vlan_tx_tag_present(skb))
+	if (vlan_tx_tag_present(skb))
 		vlan_tag = vlan_tx_tag_get(skb);
 	if (sp->config.tx_steering_type == TX_DEFAULT_STEERING) {
 		if (skb->protocol == htons(ETH_P_IP)) {
@@ -5125,8 +5124,6 @@ static void s2io_set_multicast(struct net_device *dev)
 		/* Create the new Rx filter list and update the same in H/W. */
 		i = 0;
 		netdev_for_each_mc_addr(ha, dev) {
-			memcpy(sp->usr_addrs[i].addr, ha->addr,
-			       ETH_ALEN);
 			mac_addr = 0;
 			for (j = 0; j < ETH_ALEN; j++) {
 				mac_addr |= ha->addr[j];
@@ -5575,30 +5572,27 @@ static void s2io_ethtool_gringparam(struct net_device *dev,
 	struct s2io_nic *sp = netdev_priv(dev);
 	int i, tx_desc_count = 0, rx_desc_count = 0;
 
-	if (sp->rxd_mode == RXD_MODE_1)
+	if (sp->rxd_mode == RXD_MODE_1) {
 		ering->rx_max_pending = MAX_RX_DESC_1;
-	else if (sp->rxd_mode == RXD_MODE_3B)
+		ering->rx_jumbo_max_pending = MAX_RX_DESC_1;
+	} else {
 		ering->rx_max_pending = MAX_RX_DESC_2;
-
-	ering->tx_max_pending = MAX_TX_DESC;
-	for (i = 0 ; i < sp->config.tx_fifo_num ; i++)
-		tx_desc_count += sp->config.tx_cfg[i].fifo_len;
-
-	DBG_PRINT(INFO_DBG, "max txds: %d\n", sp->config.max_txds);
-	ering->tx_pending = tx_desc_count;
-	rx_desc_count = 0;
-	for (i = 0 ; i < sp->config.rx_ring_num ; i++)
-		rx_desc_count += sp->config.rx_cfg[i].num_rxd;
-
-	ering->rx_pending = rx_desc_count;
+		ering->rx_jumbo_max_pending = MAX_RX_DESC_2;
+	}
 
 	ering->rx_mini_max_pending = 0;
-	ering->rx_mini_pending = 0;
-	if (sp->rxd_mode == RXD_MODE_1)
-		ering->rx_jumbo_max_pending = MAX_RX_DESC_1;
-	else if (sp->rxd_mode == RXD_MODE_3B)
-		ering->rx_jumbo_max_pending = MAX_RX_DESC_2;
+	ering->tx_max_pending = MAX_TX_DESC;
+
+	for (i = 0; i < sp->config.rx_ring_num; i++)
+		rx_desc_count += sp->config.rx_cfg[i].num_rxd;
+	ering->rx_pending = rx_desc_count;
 	ering->rx_jumbo_pending = rx_desc_count;
+	ering->rx_mini_pending = 0;
+
+	for (i = 0; i < sp->config.tx_fifo_num; i++)
+		tx_desc_count += sp->config.tx_cfg[i].fifo_len;
+	ering->tx_pending = tx_desc_count;
+	DBG_PRINT(INFO_DBG, "max txds: %d\n", sp->config.max_txds);
 }
 
 /**
@@ -5797,7 +5791,7 @@ static void s2io_vpd_read(struct s2io_nic *nic)
 {
 	u8 *vpd_data;
 	u8 data;
-	int i = 0, cnt, fail = 0;
+	int i = 0, cnt, len, fail = 0;
 	int vpd_addr = 0x80;
 	struct swStat *swstats = &nic->mac_control.stats_info->sw_stat;
 
@@ -5838,20 +5832,28 @@ static void s2io_vpd_read(struct s2io_nic *nic)
 
 	if (!fail) {
 		/* read serial number of adapter */
-		for (cnt = 0; cnt < 256; cnt++) {
+		for (cnt = 0; cnt < 252; cnt++) {
 			if ((vpd_data[cnt] == 'S') &&
-			    (vpd_data[cnt+1] == 'N') &&
-			    (vpd_data[cnt+2] < VPD_STRING_LEN)) {
-				memset(nic->serial_num, 0, VPD_STRING_LEN);
-				memcpy(nic->serial_num, &vpd_data[cnt + 3],
-				       vpd_data[cnt+2]);
-				break;
+			    (vpd_data[cnt+1] == 'N')) {
+				len = vpd_data[cnt+2];
+				if (len < min(VPD_STRING_LEN, 256-cnt-2)) {
+					memcpy(nic->serial_num,
+					       &vpd_data[cnt + 3],
+					       len);
+					memset(nic->serial_num+len,
+					       0,
+					       VPD_STRING_LEN-len);
+					break;
+				}
 			}
 		}
 	}
 
-	if ((!fail) && (vpd_data[1] < VPD_STRING_LEN))
-		memcpy(nic->product_name, &vpd_data[3], vpd_data[1]);
+	if ((!fail) && (vpd_data[1] < VPD_STRING_LEN)) {
+		len = vpd_data[1];
+		memcpy(nic->product_name, &vpd_data[3], len);
+		nic->product_name[len] = 0;
+	}
 	kfree(vpd_data);
 	swstats->mem_freed += 256;
 }
@@ -6707,6 +6709,7 @@ static u32 s2io_ethtool_op_get_tso(struct net_device *dev)
 {
 	return (dev->features & NETIF_F_TSO) != 0;
 }
+
 static int s2io_ethtool_op_set_tso(struct net_device *dev, u32 data)
 {
 	if (data)
@@ -6715,6 +6718,38 @@ static int s2io_ethtool_op_set_tso(struct net_device *dev, u32 data)
 		dev->features &= ~(NETIF_F_TSO | NETIF_F_TSO6);
 
 	return 0;
+}
+
+static int s2io_ethtool_set_flags(struct net_device *dev, u32 data)
+{
+	struct s2io_nic *sp = netdev_priv(dev);
+	int rc = 0;
+	int changed = 0;
+
+	if (ethtool_invalid_flags(dev, data, ETH_FLAG_LRO))
+		return -EINVAL;
+
+	if (data & ETH_FLAG_LRO) {
+		if (!(dev->features & NETIF_F_LRO)) {
+			dev->features |= NETIF_F_LRO;
+			changed = 1;
+		}
+	} else if (dev->features & NETIF_F_LRO) {
+		dev->features &= ~NETIF_F_LRO;
+		changed = 1;
+	}
+
+	if (changed && netif_running(dev)) {
+		s2io_stop_all_tx_queue(sp);
+		s2io_card_down(sp);
+		rc = s2io_card_up(sp);
+		if (rc)
+			s2io_reset(sp);
+		else
+			s2io_start_all_tx_queue(sp);
+	}
+
+	return rc;
 }
 
 static const struct ethtool_ops netdev_ethtool_ops = {
@@ -6733,6 +6768,8 @@ static const struct ethtool_ops netdev_ethtool_ops = {
 	.get_rx_csum = s2io_ethtool_get_rx_csum,
 	.set_rx_csum = s2io_ethtool_set_rx_csum,
 	.set_tx_csum = s2io_ethtool_op_set_tx_csum,
+	.set_flags = s2io_ethtool_set_flags,
+	.get_flags = ethtool_op_get_flags,
 	.set_sg = ethtool_op_set_sg,
 	.get_tso = s2io_ethtool_op_get_tso,
 	.set_tso = s2io_ethtool_op_set_tso,
@@ -7261,6 +7298,7 @@ static int s2io_card_up(struct s2io_nic *sp)
 		struct ring_info *ring = &mac_control->rings[i];
 
 		ring->mtu = dev->mtu;
+		ring->lro = !!(dev->features & NETIF_F_LRO);
 		ret = fill_rx_buffers(sp, ring, 1);
 		if (ret) {
 			DBG_PRINT(ERR_DBG, "%s: Out of memory in Open\n",
@@ -7294,7 +7332,7 @@ static int s2io_card_up(struct s2io_nic *sp)
 	/* Setting its receive mode */
 	s2io_set_multicast(dev);
 
-	if (sp->lro) {
+	if (dev->features & NETIF_F_LRO) {
 		/* Initialize max aggregatable pkts per session based on MTU */
 		sp->lro_max_aggr_per_sess = ((1<<16) - 1) / dev->mtu;
 		/* Check if we can use (if specified) user provided value */
@@ -7566,10 +7604,10 @@ static int rx_osm_handler(struct ring_info *ring_data, struct RxD_t * rxdp)
 			 * Packet with erroneous checksum, let the
 			 * upper layers deal with it.
 			 */
-			skb->ip_summed = CHECKSUM_NONE;
+			skb_checksum_none_assert(skb);
 		}
 	} else
-		skb->ip_summed = CHECKSUM_NONE;
+		skb_checksum_none_assert(skb);
 
 	swstats->mem_freed += skb->truesize;
 send_up:
@@ -7655,6 +7693,8 @@ static void s2io_init_pci(struct s2io_nic *sp)
 static int s2io_verify_parm(struct pci_dev *pdev, u8 *dev_intr_type,
 			    u8 *dev_multiq)
 {
+	int i;
+
 	if ((tx_fifo_num > MAX_TX_FIFOS) || (tx_fifo_num < 1)) {
 		DBG_PRINT(ERR_DBG, "Requested number of tx fifos "
 			  "(%d) not supported\n", tx_fifo_num);
@@ -7713,6 +7753,15 @@ static int s2io_verify_parm(struct pci_dev *pdev, u8 *dev_intr_type,
 		DBG_PRINT(ERR_DBG, "Defaulting to 1-buffer mode\n");
 		rx_ring_mode = 1;
 	}
+
+	for (i = 0; i < MAX_RX_RINGS; i++)
+		if (rx_ring_sz[i] > MAX_RX_BLOCKS_PER_RING) {
+			DBG_PRINT(ERR_DBG, "Requested rx ring size not "
+				  "supported\nDefaulting to %d\n",
+				  MAX_RX_BLOCKS_PER_RING);
+			rx_ring_sz[i] = MAX_RX_BLOCKS_PER_RING;
+		}
+
 	return SUCCESS;
 }
 
@@ -7847,7 +7896,6 @@ s2io_init_nic(struct pci_dev *pdev, const struct pci_device_id *pre)
 
 	/*  Private member variable initialized to s2io NIC structure */
 	sp = netdev_priv(dev);
-	memset(sp, 0, sizeof(struct s2io_nic));
 	sp->dev = dev;
 	sp->pdev = pdev;
 	sp->high_dma_flag = dma_flag;
@@ -7865,7 +7913,6 @@ s2io_init_nic(struct pci_dev *pdev, const struct pci_device_id *pre)
 	else
 		sp->device_type = XFRAME_I_DEVICE;
 
-	sp->lro = lro_enable;
 
 	/* Initialize some PCI/PCI-X fields of the NIC. */
 	s2io_init_pci(sp);
@@ -8001,7 +8048,7 @@ s2io_init_nic(struct pci_dev *pdev, const struct pci_device_id *pre)
 	dev->netdev_ops = &s2io_netdev_ops;
 	SET_ETHTOOL_OPS(dev, &netdev_ethtool_ops);
 	dev->features |= NETIF_F_HW_VLAN_TX | NETIF_F_HW_VLAN_RX;
-
+	dev->features |= NETIF_F_LRO;
 	dev->features |= NETIF_F_SG | NETIF_F_IP_CSUM;
 	if (sp->high_dma_flag == true)
 		dev->features |= NETIF_F_HIGHDMA;
@@ -8159,7 +8206,7 @@ s2io_init_nic(struct pci_dev *pdev, const struct pci_device_id *pre)
 		goto register_failed;
 	}
 	s2io_vpd_read(sp);
-	DBG_PRINT(ERR_DBG, "Copyright(c) 2002-2007 Neterion Inc.\n");
+	DBG_PRINT(ERR_DBG, "Copyright(c) 2002-2010 Exar Corp.\n");
 	DBG_PRINT(ERR_DBG, "%s: Neterion %s (rev %d)\n", dev->name,
 		  sp->product_name, pdev->revision);
 	DBG_PRINT(ERR_DBG, "%s: Driver version %s\n", dev->name,
@@ -8236,9 +8283,8 @@ s2io_init_nic(struct pci_dev *pdev, const struct pci_device_id *pre)
 			  dev->name);
 	}
 
-	if (sp->lro)
-		DBG_PRINT(ERR_DBG, "%s: Large receive offload enabled\n",
-			  dev->name);
+	DBG_PRINT(ERR_DBG, "%s: Large receive offload enabled\n",
+		  dev->name);
 	if (ufo)
 		DBG_PRINT(ERR_DBG,
 			  "%s: UDP Fragmentation Offload(UFO) enabled\n",
@@ -8287,8 +8333,7 @@ mem_alloc_failed:
 
 static void __devexit s2io_rem_nic(struct pci_dev *pdev)
 {
-	struct net_device *dev =
-		(struct net_device *)pci_get_drvdata(pdev);
+	struct net_device *dev = pci_get_drvdata(pdev);
 	struct s2io_nic *sp;
 
 	if (dev == NULL) {
@@ -8296,9 +8341,11 @@ static void __devexit s2io_rem_nic(struct pci_dev *pdev)
 		return;
 	}
 
-	flush_scheduled_work();
-
 	sp = netdev_priv(dev);
+
+	cancel_work_sync(&sp->rst_timer_task);
+	cancel_work_sync(&sp->set_link_task);
+
 	unregister_netdev(dev);
 
 	free_shared_mem(sp);

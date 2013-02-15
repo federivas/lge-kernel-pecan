@@ -148,6 +148,8 @@ struct scsi_device {
 	unsigned retry_hwerror:1;	/* Retry HARDWARE_ERROR */
 	unsigned last_sector_bug:1;	/* do not use multisector accesses on
 					   SD_LAST_BUGGY_SECTORS */
+	unsigned no_read_disc_info:1;	/* Avoid READ_DISC_INFO cmds */
+	unsigned no_read_capacity_16:1; /* Avoid READ_CAPACITY_16 cmds */
 	unsigned is_visible:1;	/* is the device visible in sysfs */
 
 	DECLARE_BITMAP(supported_events, SDEV_EVT_MAXBITS); /* supported events */
@@ -381,6 +383,14 @@ extern int scsi_execute_req(struct scsi_device *sdev, const unsigned char *cmd,
 			    struct scsi_sense_hdr *, int timeout, int retries,
 			    int *resid);
 
+#ifdef CONFIG_PM_RUNTIME
+extern int scsi_autopm_get_device(struct scsi_device *);
+extern void scsi_autopm_put_device(struct scsi_device *);
+#else
+static inline int scsi_autopm_get_device(struct scsi_device *d) { return 0; }
+static inline void scsi_autopm_put_device(struct scsi_device *d) {}
+#endif /* CONFIG_PM_RUNTIME */
+
 static inline int __must_check scsi_device_reprobe(struct scsi_device *sdev)
 {
 	return device_reprobe(&sdev->sdev_gendev);
@@ -451,7 +461,7 @@ static inline int scsi_device_qas(struct scsi_device *sdev)
 }
 static inline int scsi_device_enclosure(struct scsi_device *sdev)
 {
-	return sdev->inquiry[6] & (1<<6);
+	return sdev->inquiry ? (sdev->inquiry[6] & (1<<6)) : 1;
 }
 
 static inline int scsi_device_protection(struct scsi_device *sdev)

@@ -61,6 +61,10 @@
 #define DDL_I_FRAME_PROC_UNITS   (VCD_I_CUSTOM_DDL_BASE + 0x9)
 #define DDL_I_SEQHDR_PRESENT     (VCD_I_CUSTOM_DDL_BASE + 0xA)
 
+#define DDL_FRAME_VGA_SIZE     (640*480)
+#define DDL_FRAME_720P_WIDTH   1280
+#define DDL_FRAME_720P_HEIGHT  720
+
 struct vcd_property_rc_level{
 	u32 frame_level_rc;
 	u32 mb_level_rc;
@@ -86,6 +90,7 @@ struct ddl_property_capability{
 	u32 ddl_time_out_in_ms;
 };
 struct ddl_init_config{
+	int memtype;
 	u8 *core_virtual_base_addr;
 	void (*interrupt_clr) (void);
 	void (*ddl_callback) (u32 event, u32 status, void *payload, size_t sz,

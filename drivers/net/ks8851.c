@@ -21,8 +21,10 @@
 #include <linux/cache.h>
 #include <linux/crc32.h>
 #include <linux/mii.h>
-
+#include <linux/regulator/consumer.h>
 #include <linux/spi/spi.h>
+#include <linux/ks8851.h>
+#include <linux/gpio.h>
 
 #include "ks8851.h"
 
@@ -127,6 +129,8 @@ struct ks8851_net {
 	struct spi_message	spi_msg2;
 	struct spi_transfer	spi_xfer1;
 	struct spi_transfer	spi_xfer2[2];
+	struct regulator	*vdd_io;
+	struct regulator	*vdd_phy;
 };
 
 static int msg_enable;
@@ -370,19 +374,26 @@ static int ks8851_write_mac_addr(struct net_device *dev)
  * @ks: The device structure
  *
  * Get or create the initial mac address for the device and then set that
- * into the station address register. Currently we assume that the device
- * does not have a valid mac address in it, and so we use random_ether_addr()
- * to create a new one.
- *
- * In future, the driver should check to see if the device has an EEPROM
- * attached and whether that has a valid ethernet address in it.
+ * into the station address register. The device will try to read a MAC address
+ * from the EEPROM and program it into the MARs. We use random_ether_addr()
+ * if the EEPROM is not present or if the address in the MARs appears invalid.
  */
 static void ks8851_init_mac(struct ks8851_net *ks)
 {
 	struct net_device *dev = ks->netdev;
+	int i;
 
-	random_ether_addr(dev->dev_addr);
-	ks8851_write_mac_addr(dev);
+	mutex_lock(&ks->lock);
+
+	for (i = 0; i < ETH_ALEN; i++)
+		dev->dev_addr[i] = ks8851_rdreg8(ks, KS_MAR(i));
+
+	mutex_unlock(&ks->lock);
+
+	if (!(ks->rc_ccr & CCR_EEPROM) || !is_valid_ether_addr(dev->dev_addr)) {
+		random_ether_addr(dev->dev_addr);
+		ks8851_write_mac_addr(dev);
+	}
 }
 
 /**
@@ -503,30 +514,33 @@ static void ks8851_rx_pkts(struct ks8851_net *ks)
 		ks8851_wrreg16(ks, KS_RXQCR,
 			       ks->rc_rxqcr | RXQCR_SDA | RXQCR_ADRFE);
 
-		if (rxlen > 0) {
-			skb = netdev_alloc_skb(ks->netdev, rxlen + 2 + 8);
-			if (!skb) {
-				/* todo - dump frame and move on */
+		if (rxlen > 4) {
+			unsigned int rxalign;
+
+			rxlen -= 4;
+			rxalign = ALIGN(rxlen, 4);
+			skb = netdev_alloc_skb_ip_align(ks->netdev, rxalign);
+			if (skb) {
+
+				/* 4 bytes of status header + 4 bytes of
+				 * garbage: we put them before ethernet
+				 * header, so that they are copied,
+				 * but ignored.
+				 */
+
+				rxpkt = skb_put(skb, rxlen) - 8;
+
+				ks8851_rdfifo(ks, rxpkt, rxalign + 8);
+
+				if (netif_msg_pktdata(ks))
+					ks8851_dbg_dumpkkt(ks, rxpkt);
+
+				skb->protocol = eth_type_trans(skb, ks->netdev);
+				netif_rx(skb);
+
+				ks->netdev->stats.rx_packets++;
+				ks->netdev->stats.rx_bytes += rxlen;
 			}
-
-			/* two bytes to ensure ip is aligned, and four bytes
-			 * for the status header and 4 bytes of garbage */
-			skb_reserve(skb, 2 + 4 + 4);
-
-			rxpkt = skb_put(skb, rxlen - 4) - 8;
-
-			/* align the packet length to 4 bytes, and add 4 bytes
-			 * as we're getting the rx status header as well */
-			ks8851_rdfifo(ks, rxpkt, ALIGN(rxlen, 4) + 8);
-
-			if (netif_msg_pktdata(ks))
-				ks8851_dbg_dumpkkt(ks, rxpkt);
-
-			skb->protocol = eth_type_trans(skb, ks->netdev);
-			netif_rx(skb);
-
-			ks->netdev->stats.rx_packets++;
-			ks->netdev->stats.rx_bytes += rxlen - 4;
 		}
 
 		ks8851_wrreg16(ks, KS_RXQCR, ks->rc_rxqcr);
@@ -1542,8 +1556,40 @@ static int ks8851_read_selftest(struct ks8851_net *ks)
 
 /* driver bus management functions */
 
+#ifdef CONFIG_PM
+static int ks8851_suspend(struct spi_device *spi, pm_message_t state)
+{
+	struct ks8851_net *ks = dev_get_drvdata(&spi->dev);
+	struct net_device *dev = ks->netdev;
+
+	if (netif_running(dev)) {
+		netif_device_detach(dev);
+		ks8851_net_stop(dev);
+	}
+
+	return 0;
+}
+
+static int ks8851_resume(struct spi_device *spi)
+{
+	struct ks8851_net *ks = dev_get_drvdata(&spi->dev);
+	struct net_device *dev = ks->netdev;
+
+	if (netif_running(dev)) {
+		ks8851_net_open(dev);
+		netif_device_attach(dev);
+	}
+
+	return 0;
+}
+#else
+#define ks8851_suspend NULL
+#define ks8851_resume NULL
+#endif
+
 static int __devinit ks8851_probe(struct spi_device *spi)
 {
+	struct ks8851_pdata *pdata = spi->dev.platform_data;
 	struct net_device *ndev;
 	struct ks8851_net *ks;
 	int ret;
@@ -1557,6 +1603,32 @@ static int __devinit ks8851_probe(struct spi_device *spi)
 	spi->bits_per_word = 8;
 
 	ks = netdev_priv(ndev);
+
+	ks->vdd_io = regulator_get(&spi->dev, "vdd_io");
+	ks->vdd_phy = regulator_get(&spi->dev, "vdd_phy");
+
+	if (!IS_ERR(ks->vdd_io))
+		regulator_enable(ks->vdd_io);
+
+	if (!IS_ERR(ks->vdd_phy))
+		regulator_enable(ks->vdd_phy);
+
+	if (pdata && gpio_is_valid(pdata->irq_gpio)) {
+		ret = gpio_request(pdata->irq_gpio, "ks8851_irq");
+		if (ret) {
+			pr_err("ks8851 gpio_request failed: %d\n", ret);
+			goto err_irq_gpio;
+		}
+	}
+
+	if (pdata && gpio_is_valid(pdata->rst_gpio)) {
+		ret = gpio_request(pdata->rst_gpio, "ks8851_rst");
+		if (ret) {
+			pr_err("ks8851 gpio_request failed: %d\n", ret);
+			goto err_rst_gpio;
+		}
+		gpio_direction_output(pdata->rst_gpio, 1);
+	}
 
 	ks->netdev = ndev;
 	ks->spidev = spi;
@@ -1652,18 +1724,55 @@ err_netdev:
 err_id:
 err_irq:
 	free_netdev(ndev);
+
+	if (!IS_ERR(ks->vdd_io)) {
+		regulator_disable(ks->vdd_io);
+		regulator_put(ks->vdd_io);
+	}
+
+	if (!IS_ERR(ks->vdd_phy)) {
+		regulator_disable(ks->vdd_phy);
+		regulator_put(ks->vdd_phy);
+	}
+
+	if (pdata && gpio_is_valid(pdata->rst_gpio))
+		gpio_free(pdata->rst_gpio);
+
+err_rst_gpio:
+	if (pdata && gpio_is_valid(pdata->irq_gpio))
+		gpio_free(pdata->irq_gpio);
+
+err_irq_gpio:
 	return ret;
 }
 
 static int __devexit ks8851_remove(struct spi_device *spi)
 {
 	struct ks8851_net *priv = dev_get_drvdata(&spi->dev);
+	struct ks8851_pdata *pdata = spi->dev.platform_data;
 
 	if (netif_msg_drv(priv))
 		dev_info(&spi->dev, "remove\n");
 
+	if (!IS_ERR(priv->vdd_io)) {
+		regulator_disable(priv->vdd_io);
+		regulator_put(priv->vdd_io);
+	}
+
+	if (!IS_ERR(priv->vdd_phy)) {
+		regulator_disable(priv->vdd_phy);
+		regulator_put(priv->vdd_phy);
+	}
+
 	unregister_netdev(priv->netdev);
 	free_irq(spi->irq, priv);
+
+	if (pdata && gpio_is_valid(pdata->irq_gpio))
+		gpio_free(pdata->irq_gpio);
+
+	if (pdata && gpio_is_valid(pdata->rst_gpio))
+		gpio_free(pdata->rst_gpio);
+
 	free_netdev(priv->netdev);
 
 	return 0;
@@ -1676,6 +1785,8 @@ static struct spi_driver ks8851_driver = {
 	},
 	.probe = ks8851_probe,
 	.remove = __devexit_p(ks8851_remove),
+	.suspend = ks8851_suspend,
+	.resume = ks8851_resume,
 };
 
 static int __init ks8851_init(void)

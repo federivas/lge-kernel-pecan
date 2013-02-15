@@ -28,6 +28,7 @@ modules.builtin
 *.gz
 *.bz2
 *.lzma
+*.xz
 *.lzo
 *.patch
 *.gcno
@@ -77,8 +78,3 @@ GTAGS
 *.orig
 *~
 \#*#
-*-old.*
-*.save
-
-arch/arm/boot/compressed/.
-arch/arm/boot/compressed/vmlinux

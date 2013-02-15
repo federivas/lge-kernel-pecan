@@ -1520,7 +1520,6 @@ static void a2xx_cp_intrcallback(struct kgsl_device *device)
 
 	if (status & (CP_INT_CNTL__IB1_INT_MASK | CP_INT_CNTL__RB_INT_MASK)) {
 		KGSL_CMD_WARN(rb->device, "ringbuffer ib1/rb interrupt\n");
-		queue_work(device->work_queue, &device->ts_expired_ws);
 		wake_up_interruptible_all(&device->wait_queue);
 		atomic_notifier_call_chain(&(device->ts_notifier_list),
 					   device->id,
@@ -1605,4 +1604,3 @@ struct adreno_gpudev adreno_a2xx_gpudev = {
 	.irq_handler = a2xx_irq_handler,
 	.irq_control = a2xx_irq_control,
 };
-

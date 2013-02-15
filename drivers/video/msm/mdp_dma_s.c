@@ -9,11 +9,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
- *
  */
 
 #include <linux/module.h>
@@ -47,9 +42,8 @@ static void mdp_dma_s_update_lcd(struct msm_fb_data_type *mfd)
 	struct msm_fb_panel_data *pdata =
 	    (struct msm_fb_panel_data *)mfd->pdev->dev.platform_data;
 
-	/* LGE_CHANGE, Enable dithering, munyoung.hwang@lge.com */
 	dma_s_cfg_reg = DMA_PACK_TIGHT | DMA_PACK_ALIGN_LSB |
-	    DMA_OUT_SEL_AHB | DMA_IBUF_NONCONTIGUOUS | DMA_DITHER_EN;
+	    DMA_OUT_SEL_AHB | DMA_IBUF_NONCONTIGUOUS;
 
 	if (mfd->fb_imgType == MDP_BGR_565)
 		dma_s_cfg_reg |= DMA_PACK_PATTERN_BGR;

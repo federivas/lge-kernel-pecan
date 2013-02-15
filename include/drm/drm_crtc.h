@@ -31,7 +31,6 @@
 #include <linux/idr.h>
 
 #include <linux/fb.h>
-#include <linux/slow-work.h>
 
 struct drm_device;
 struct drm_mode_set;
@@ -190,48 +189,15 @@ enum subpixel_order {
  */
 struct drm_display_info {
 	char name[DRM_DISPLAY_INFO_LEN];
-	/* Input info */
-	bool serration_vsync;
-	bool sync_on_green;
-	bool composite_sync;
-	bool separate_syncs;
-	bool blank_to_black;
-	unsigned char video_level;
-	bool digital;
+
 	/* Physical size */
         unsigned int width_mm;
 	unsigned int height_mm;
-
-	/* Display parameters */
-	unsigned char gamma; /* FIXME: storage format */
-	bool gtf_supported;
-	bool standard_color;
-	enum {
-		monochrome = 0,
-		rgb,
-		other,
-		unknown,
-	} display_type;
-	bool active_off_supported;
-	bool suspend_supported;
-	bool standby_supported;
-
-	/* Color info FIXME: storage format */
-	unsigned short redx, redy;
-	unsigned short greenx, greeny;
-	unsigned short bluex, bluey;
-	unsigned short whitex, whitey;
 
 	/* Clock limits FIXME: storage format */
 	unsigned int min_vfreq, max_vfreq;
 	unsigned int min_hfreq, max_hfreq;
 	unsigned int pixel_clock;
-
-	/* White point indices FIXME: storage format */
-	unsigned int wpx1, wpy1;
-	unsigned int wpgamma1;
-	unsigned int wpx2, wpy2;
-	unsigned int wpgamma2;
 
 	enum subpixel_order subpixel_order;
 
@@ -255,7 +221,8 @@ struct drm_framebuffer_funcs {
 	 * the semantics and arguments have a one to one mapping
 	 * on this function.
 	 */
-	int (*dirty)(struct drm_framebuffer *framebuffer, unsigned flags,
+	int (*dirty)(struct drm_framebuffer *framebuffer,
+		     struct drm_file *file_priv, unsigned flags,
 		     unsigned color, struct drm_clip_rect *clips,
 		     unsigned num_clips);
 };
@@ -308,6 +275,7 @@ struct drm_pending_vblank_event;
 
 /**
  * drm_crtc_funcs - control CRTCs for a given device
+ * @reset: reset CRTC after state has been invalidate (e.g. resume)
  * @dpms: control display power levels
  * @save: save CRTC state
  * @resore: restore CRTC state
@@ -335,6 +303,8 @@ struct drm_crtc_funcs {
 	void (*save)(struct drm_crtc *crtc); /* suspend? */
 	/* Restore CRTC state */
 	void (*restore)(struct drm_crtc *crtc); /* resume? */
+	/* Reset CRTC state */
+	void (*reset)(struct drm_crtc *crtc);
 
 	/* cursor controls */
 	int (*cursor_set)(struct drm_crtc *crtc, struct drm_file *file_priv,
@@ -343,7 +313,7 @@ struct drm_crtc_funcs {
 
 	/* Set gamma on the CRTC */
 	void (*gamma_set)(struct drm_crtc *crtc, u16 *r, u16 *g, u16 *b,
-			  uint32_t size);
+			  uint32_t start, uint32_t size);
 	/* Object destroy routine */
 	void (*destroy)(struct drm_crtc *crtc);
 
@@ -384,7 +354,13 @@ struct drm_crtc {
 
 	bool enabled;
 
+	/* Requested mode from modesetting. */
 	struct drm_display_mode mode;
+
+	/* Programmed mode in hw, after adjustments for encoders,
+	 * crtc, panel scaling etc. Needed for timestamping etc.
+	 */
+	struct drm_display_mode hwmode;
 
 	int x, y;
 	const struct drm_crtc_funcs *funcs;
@@ -392,6 +368,9 @@ struct drm_crtc {
 	/* CRTC gamma size for reporting to userspace */
 	uint32_t gamma_size;
 	uint16_t *gamma_store;
+
+	/* Constants needed for precise vblank and swap timestamping. */
+	s64 framedur_ns, linedur_ns, pixeldur_ns;
 
 	/* if you are using the helper */
 	void *helper_private;
@@ -403,6 +382,7 @@ struct drm_crtc {
  * @dpms: set power state (see drm_crtc_funcs above)
  * @save: save connector state
  * @restore: restore connector state
+ * @reset: reset connector after state has been invalidate (e.g. resume)
  * @mode_valid: is this mode valid on the given connector?
  * @mode_fixup: try to fixup proposed mode for this connector
  * @mode_set: set this mode
@@ -420,7 +400,16 @@ struct drm_connector_funcs {
 	void (*dpms)(struct drm_connector *connector, int mode);
 	void (*save)(struct drm_connector *connector);
 	void (*restore)(struct drm_connector *connector);
-	enum drm_connector_status (*detect)(struct drm_connector *connector);
+	void (*reset)(struct drm_connector *connector);
+
+	/* Check to see if anything is attached to the connector.
+	 * @force is set to false whilst polling, true when checking the
+	 * connector due to user request. @force can be used by the driver
+	 * to avoid expensive, destructive operations during automated
+	 * probing.
+	 */
+	enum drm_connector_status (*detect)(struct drm_connector *connector,
+					    bool force);
 	int (*fill_modes)(struct drm_connector *connector, uint32_t max_width, uint32_t max_height);
 	int (*set_property)(struct drm_connector *connector, struct drm_property *property,
 			     uint64_t val);
@@ -429,6 +418,7 @@ struct drm_connector_funcs {
 };
 
 struct drm_encoder_funcs {
+	void (*reset)(struct drm_encoder *encoder);
 	void (*destroy)(struct drm_encoder *encoder);
 };
 
@@ -595,7 +585,7 @@ struct drm_mode_config {
 
 	/* output poll support */
 	bool poll_enabled;
-	struct delayed_slow_work output_poll_slow_work;
+	struct delayed_work output_poll_work;
 
 	/* pointers to standard properties */
 	struct list_head property_blob_list;
@@ -672,6 +662,7 @@ extern struct drm_display_mode *drm_mode_duplicate(struct drm_device *dev,
 						   struct drm_display_mode *mode);
 extern void drm_mode_debug_printmodeline(struct drm_display_mode *mode);
 extern void drm_mode_config_init(struct drm_device *dev);
+extern void drm_mode_config_reset(struct drm_device *dev);
 extern void drm_mode_config_cleanup(struct drm_device *dev);
 extern void drm_mode_set_name(struct drm_display_mode *mode);
 extern bool drm_mode_equal(struct drm_display_mode *mode1, struct drm_display_mode *mode2);
@@ -788,6 +779,7 @@ extern int drm_mode_gamma_get_ioctl(struct drm_device *dev,
 extern int drm_mode_gamma_set_ioctl(struct drm_device *dev,
 				    void *data, struct drm_file *file_priv);
 extern bool drm_detect_hdmi_monitor(struct edid *edid);
+extern bool drm_detect_monitor_audio(struct edid *edid);
 extern int drm_mode_page_flip_ioctl(struct drm_device *dev,
 				    void *data, struct drm_file *file_priv);
 extern struct drm_display_mode *drm_cvt_mode(struct drm_device *dev,

@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -9,25 +9,20 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
- *
  */
-
+#include <mach/msm_memtypes.h>
 #include "vcd_ddl.h"
 #include "vcd_ddl_metadata.h"
-#ifdef DDL_PROFILE
+#include "vcd_res_tracker_api.h"
+
 static unsigned int first_time;
-#endif
 
 u32 ddl_device_init(struct ddl_init_config *ddl_init_config,
 	void *client_data)
 {
 	struct ddl_context *ddl_context;
 	u32 status = VCD_S_SUCCESS;
-	void *ptr;
+	void *ptr = NULL;
 	DDL_MSG_HIGH("ddl_device_init");
 
 	if ((!ddl_init_config) || (!ddl_init_config->ddl_callback) ||
@@ -65,8 +60,12 @@ u32 ddl_device_init(struct ddl_init_config *ddl_init_config,
 	ddl_client_transact(DDL_INIT_CLIENTS, NULL);
 	ddl_context->fw_memory_size =
 		DDL_FW_INST_GLOBAL_CONTEXT_SPACE_SIZE;
-	ptr = ddl_pmem_alloc(&ddl_context->dram_base_a,
-		ddl_context->fw_memory_size, DDL_KILO_BYTE(128));
+	if (res_trk_get_firmware_addr(&ddl_context->dram_base_a)) {
+		DDL_MSG_ERROR("firmware allocation failed");
+		ptr = NULL;
+	} else {
+		ptr = (void *)ddl_context->dram_base_a.virtual_base_addr;
+	}
 	if (!ptr) {
 		DDL_MSG_ERROR("Memory Aocation Failed for FW Base");
 		status = VCD_ERR_ALLOC_FAIL;
@@ -233,15 +232,14 @@ u32 ddl_encode_start(u32 *ddl_handle, void *client_data)
 	struct ddl_encoder_data *encoder;
 	void *ptr;
 	u32 status = VCD_S_SUCCESS;
-
 	DDL_MSG_HIGH("ddl_encode_start");
-#ifdef DDL_PROFILE
-	if (first_time < 2) {
-		ddl_reset_time_variables(1);
-		first_time++;
-	 }
-	ddl_get_core_start_time(1);
-#endif
+	if (vidc_msg_timing) {
+		if (first_time < 2) {
+			ddl_reset_core_time_variables(ENC_OP_TIME);
+			first_time++;
+		 }
+		ddl_set_core_start_time(__func__, ENC_OP_TIME);
+	}
 	ddl_context = ddl_get_context();
 	if (!DDL_IS_INITIALIZED(ddl_context)) {
 		DDL_MSG_ERROR("ddl_enc_start:Not_inited");
@@ -270,21 +268,13 @@ u32 ddl_encode_start(u32 *ddl_handle, void *client_data)
 #ifdef DDL_BUF_LOG
 	ddl_list_buffers(ddl);
 #endif
-	if ((encoder->codec.codec == VCD_CODEC_MPEG4 &&
-		!encoder->short_header.short_header) ||
-		encoder->codec.codec == VCD_CODEC_H264) {
-		ptr = ddl_pmem_alloc(&encoder->seq_header,
-			DDL_ENC_SEQHEADER_SIZE, DDL_LINEAR_BUFFER_ALIGN_BYTES);
-		if (!ptr) {
-			ddl_free_enc_hw_buffers(ddl);
-			DDL_MSG_ERROR("ddl_enc_start:Seq_hdr_alloc_failed");
-			return VCD_ERR_ALLOC_FAIL;
-		}
-	} else {
-		encoder->seq_header.buffer_size = 0;
-		encoder->seq_header.virtual_base_addr = 0;
-		encoder->seq_header.align_physical_addr = 0;
-		encoder->seq_header.align_virtual_addr = 0;
+
+	ptr = ddl_pmem_alloc(&encoder->seq_header,
+		DDL_ENC_SEQHEADER_SIZE, DDL_LINEAR_BUFFER_ALIGN_BYTES);
+	if (!ptr) {
+		ddl_free_enc_hw_buffers(ddl);
+		DDL_MSG_ERROR("ddl_enc_start:Seq_hdr_alloc_failed");
+		return VCD_ERR_ALLOC_FAIL;
 	}
 	if (!ddl_take_command_channel(ddl_context, ddl, client_data))
 		return VCD_ERR_BUSY;
@@ -302,9 +292,10 @@ u32 ddl_decode_start(u32 *ddl_handle, struct vcd_sequence_hdr *header,
 	u32 status = VCD_S_SUCCESS;
 
 	DDL_MSG_HIGH("ddl_decode_start");
-#ifdef DDL_PROFILE
-	ddl_reset_time_variables(0);
-#endif
+	if (vidc_msg_timing) {
+		ddl_reset_core_time_variables(DEC_OP_TIME);
+		ddl_reset_core_time_variables(DEC_IP_TIME);
+	}
 	ddl_context = ddl_get_context();
 	if (!DDL_IS_INITIALIZED(ddl_context)) {
 		DDL_MSG_ERROR("ddl_dec_start:Not_inited");
@@ -360,11 +351,7 @@ u32 ddl_decode_frame(u32 *ddl_handle,
 		(struct ddl_client_context *) ddl_handle;
 	struct ddl_context *ddl_context;
 	struct ddl_decoder_data *decoder;
-
 	DDL_MSG_HIGH("ddl_decode_frame");
-#ifdef DDL_PROFILE
-	ddl_get_core_start_time(0);
-#endif
 	ddl_context = ddl_get_context();
 	if (!DDL_IS_INITIALIZED(ddl_context)) {
 		DDL_MSG_ERROR("ddl_dec_frame:Not_inited");
@@ -443,9 +430,8 @@ u32 ddl_encode_frame(u32 *ddl_handle,
 	u32 vcd_status = VCD_S_SUCCESS;
 
 	DDL_MSG_HIGH("ddl_encode_frame");
-#ifdef DDL_PROFILE
-	ddl_get_core_start_time(1);
-#endif
+	if (vidc_msg_timing)
+		ddl_set_core_start_time(__func__, ENC_OP_TIME);
 	ddl_context = ddl_get_context();
 	if (!DDL_IS_INITIALIZED(ddl_context)) {
 		DDL_MSG_ERROR("ddl_enc_frame:Not_inited");
@@ -516,9 +502,10 @@ u32 ddl_decode_end(u32 *ddl_handle, void *client_data)
 	struct ddl_context *ddl_context;
 
 	DDL_MSG_HIGH("ddl_decode_end");
-#ifdef DDL_PROFILE
-	ddl_reset_time_variables(0);
-#endif
+	if (vidc_msg_timing) {
+		ddl_reset_core_time_variables(DEC_OP_TIME);
+		ddl_reset_core_time_variables(DEC_IP_TIME);
+	}
 	ddl_context = ddl_get_context();
 	if (!DDL_IS_INITIALIZED(ddl_context)) {
 		DDL_MSG_ERROR("ddl_dec_end:Not_inited");
@@ -552,9 +539,8 @@ u32 ddl_encode_end(u32 *ddl_handle, void *client_data)
 	struct ddl_context *ddl_context;
 
 	DDL_MSG_HIGH("ddl_encode_end");
-#ifdef DDL_PROFILE
-	ddl_reset_time_variables(1);
-#endif
+	if (vidc_msg_timing)
+		ddl_reset_core_time_variables(ENC_OP_TIME);
 	ddl_context = ddl_get_context();
 	if (!DDL_IS_INITIALIZED(ddl_context)) {
 		DDL_MSG_ERROR("ddl_enc_end:Not_inited");

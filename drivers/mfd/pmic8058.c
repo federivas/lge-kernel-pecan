@@ -9,27 +9,25 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
- *
  */
 /*
  * Qualcomm PMIC8058 driver
  *
  */
 #include <linux/interrupt.h>
-#include <linux/i2c.h>
+#include <linux/bitops.h>
 #include <linux/slab.h>
 #include <linux/ratelimit.h>
 #include <linux/kthread.h>
+#include <linux/msm_ssbi.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/pmic8058.h>
 #include <linux/platform_device.h>
 #include <linux/ratelimit.h>
 #include <linux/slab.h>
 #include <linux/debugfs.h>
+#include <linux/sysdev.h>
+#include <linux/gpio.h>
 
 /* PMIC8058 Revision */
 #define SSBI_REG_REV			0x002  /* PMIC4 revision */
@@ -73,8 +71,56 @@
 #define PM8058_PON_WD_EN_RESET		0x08
 #define PM8058_PON_WD_EN_PWR_OFF	0x00
 
-/* Regulator L22 control register */
+/* PON CNTL 4 register */
+#define SSBI_REG_ADDR_PON_CNTL_4 0x98
+#define PM8058_PON_RESET_EN_MASK 0x01
+
+/* PON CNTL 5 register */
+#define SSBI_REG_ADDR_PON_CNTL_5 0x7B
+#define PM8058_HARD_RESET_EN_MASK 0x08
+
+/* Regulator master enable addresses */
+#define SSBI_REG_ADDR_VREG_EN_MSM	0x018
+#define SSBI_REG_ADDR_VREG_EN_GRP_5_4	0x1C8
+
+/* Regulator control registers for shutdown/reset */
+#define SSBI_REG_ADDR_S0_CTRL		0x004
+#define SSBI_REG_ADDR_S1_CTRL		0x005
+#define SSBI_REG_ADDR_S3_CTRL		0x111
+#define SSBI_REG_ADDR_L21_CTRL		0x120
 #define SSBI_REG_ADDR_L22_CTRL		0x121
+
+#define REGULATOR_ENABLE_MASK		0x80
+#define REGULATOR_ENABLE		0x80
+#define REGULATOR_DISABLE		0x00
+#define REGULATOR_PULL_DOWN_MASK	0x40
+#define REGULATOR_PULL_DOWN_EN		0x40
+#define REGULATOR_PULL_DOWN_DIS		0x00
+
+/* Buck CTRL register */
+#define SMPS_LEGACY_VREF_SEL		0x20
+#define SMPS_LEGACY_VPROG_MASK		0x1F
+#define SMPS_ADVANCED_BAND_MASK		0xC0
+#define SMPS_ADVANCED_BAND_SHIFT	6
+#define SMPS_ADVANCED_VPROG_MASK	0x3F
+
+/* Buck TEST2 registers for shutdown/reset */
+#define SSBI_REG_ADDR_S0_TEST2		0x084
+#define SSBI_REG_ADDR_S1_TEST2		0x085
+#define SSBI_REG_ADDR_S3_TEST2		0x11A
+
+#define REGULATOR_BANK_WRITE		0x80
+#define REGULATOR_BANK_MASK		0x70
+#define REGULATOR_BANK_SHIFT		4
+#define REGULATOR_BANK_SEL(n)		((n) << REGULATOR_BANK_SHIFT)
+
+/* Buck TEST2 register bank 1 */
+#define SMPS_LEGACY_VLOW_SEL		0x01
+
+/* Buck TEST2 register bank 7 */
+#define SMPS_ADVANCED_MODE_MASK		0x02
+#define SMPS_ADVANCED_MODE		0x02
+#define SMPS_LEGACY_MODE		0x00
 
 /* SLEEP CNTL register */
 #define SSBI_REG_ADDR_SLEEP_CNTL	0x02B
@@ -83,14 +129,21 @@
 #define PM8058_SLEEP_SMPL_EN_RESET	0x04
 #define PM8058_SLEEP_SMPL_EN_PWR_OFF	0x00
 
+#define PM8058_SLEEP_SMPL_SEL_MASK	0x03
+#define PM8058_SLEEP_SMPL_SEL_MIN	0
+#define PM8058_SLEEP_SMPL_SEL_MAX	3
+
+/* GP_TEST1 register */
+#define SSBI_REG_ADDR_GP_TEST_1		0x07A
+
+/* IRQ */
 #define	MAX_PM_IRQ		256
 #define	MAX_PM_BLOCKS		(MAX_PM_IRQ / 8 + 1)
 #define	MAX_PM_MASTERS		(MAX_PM_BLOCKS / 8 + 1)
 
 struct pm8058_chip {
 	struct pm8058_platform_data	pdata;
-
-	struct i2c_client		*dev;
+	struct device		*dev;
 
 	u8	irqs_allowed[MAX_PM_BLOCKS];
 	u8	blocks_allowed[MAX_PM_MASTERS];
@@ -131,33 +184,41 @@ static inline int pm8058_can_print(void)
 }
 
 static inline int
-ssbi_write(struct i2c_client *client, u16 addr, const u8 *buf, size_t len)
+ssbi_read(struct device *dev, u16 addr, u8 *buf, size_t len)
 {
-	int	rc;
-	struct	i2c_msg msg = {
-		.addr           = addr,
-		.flags          = 0x0,
-		.buf            = (u8 *)buf,
-		.len            = len,
-	};
-
-	rc = i2c_transfer(client->adapter, &msg, 1);
-	return (rc == 1) ? 0 : rc;
+	return msm_ssbi_read(dev->parent, addr, buf, len);
 }
 
 static inline int
-ssbi_read(struct i2c_client *client, u16 addr, u8 *buf, size_t len)
+ssbi_write(struct device *dev, u16 addr, u8 *buf, size_t len)
 {
-	int	rc;
-	struct	i2c_msg msg = {
-		.addr           = addr,
-		.flags          = I2C_M_RD,
-		.buf            = buf,
-		.len            = len,
-	};
+	return msm_ssbi_write(dev->parent, addr, buf, len);
+}
 
-	rc = i2c_transfer(client->adapter, &msg, 1);
-	return (rc == 1) ? 0 : rc;
+static int pm8058_masked_write(u16 addr, u8 val, u8 mask)
+{
+	int rc;
+	u8 reg;
+
+	if (pmic_chip == NULL)
+		return -ENODEV;
+
+	rc = ssbi_read(pmic_chip->dev, addr, &reg, 1);
+	if (rc) {
+		pr_err("%s: ssbi_read(0x%03X) failed: rc=%d\n", __func__, addr,
+			rc);
+		goto done;
+	}
+
+	reg &= ~mask;
+	reg |= val & mask;
+
+	rc = ssbi_write(pmic_chip->dev, addr, &reg, 1);
+	if (rc)
+		pr_err("%s: ssbi_write(0x%03X)=0x%02X failed: rc=%d\n",
+			__func__, addr, reg, rc);
+done:
+	return rc;
 }
 
 /* External APIs */
@@ -265,17 +326,233 @@ get_out:
 }
 EXPORT_SYMBOL(pm8058_misc_control);
 
-int pm8058_reset_pwr_off(int reset)
+/**
+ * pm8058_smpl_control - enables/disables SMPL detection
+ * @enable: 0 = shutdown PMIC on power loss, 1 = reset PMIC on power loss
+ *
+ * This function enables or disables the Sudden Momentary Power Loss detection
+ * module.  If SMPL detection is enabled, then when a sufficiently long power
+ * loss event occurs, the PMIC will automatically reset itself.  If SMPL
+ * detection is disabled, then the PMIC will shutdown when power loss occurs.
+ *
+ * RETURNS: an appropriate -ERRNO error value on error, or zero for success.
+ */
+int pm8058_smpl_control(int enable)
 {
-	int		rc;
-	u8		pon;
-	u8		ctrl;
-	u8		smpl;
+	return pm8058_masked_write(SSBI_REG_ADDR_SLEEP_CNTL,
+				   (enable ? PM8058_SLEEP_SMPL_EN_RESET
+					   : PM8058_SLEEP_SMPL_EN_PWR_OFF),
+				   PM8058_SLEEP_SMPL_EN_MASK);
+}
+EXPORT_SYMBOL(pm8058_smpl_control);
+
+/**
+ * pm8058_smpl_set_delay - sets the SMPL detection time delay
+ * @delay: enum value corresponding to delay time
+ *
+ * This function sets the time delay of the SMPL detection module.  If power
+ * is reapplied within this interval, then the PMIC reset automatically.  The
+ * SMPL detection module must be enabled for this delay time to take effect.
+ *
+ * RETURNS: an appropriate -ERRNO error value on error, or zero for success.
+ */
+int pm8058_smpl_set_delay(enum pm8058_smpl_delay delay)
+{
+	if (delay < PM8058_SLEEP_SMPL_SEL_MIN
+	    || delay > PM8058_SLEEP_SMPL_SEL_MAX) {
+		pr_err("%s: invalid delay specified: %d\n", __func__, delay);
+		return -EINVAL;
+	}
+
+	return pm8058_masked_write(SSBI_REG_ADDR_SLEEP_CNTL, delay,
+				   PM8058_SLEEP_SMPL_SEL_MASK);
+}
+EXPORT_SYMBOL(pm8058_smpl_set_delay);
+
+/**
+ * pm8058_watchdog_reset_control - enables/disables watchdog reset detection
+ * @enable: 0 = shutdown when PS_HOLD goes low, 1 = reset when PS_HOLD goes low
+ *
+ * This function enables or disables the PMIC watchdog reset detection feature.
+ * If watchdog reset detection is enabled, then the PMIC will reset itself
+ * when PS_HOLD goes low.  If it is not enabled, then the PMIC will shutdown
+ * when PS_HOLD goes low.
+ *
+ * RETURNS: an appropriate -ERRNO error value on error, or zero for success.
+ */
+int pm8058_watchdog_reset_control(int enable)
+{
+	return pm8058_masked_write(SSBI_REG_ADDR_PON_CNTL_1,
+				   (enable ? PM8058_PON_WD_EN_RESET
+					   : PM8058_PON_WD_EN_PWR_OFF),
+				   PM8058_PON_WD_EN_MASK);
+}
+EXPORT_SYMBOL(pm8058_watchdog_reset_control);
+
+/*
+ * Set an SMPS regulator to be disabled in its CTRL register, but enabled
+ * in the master enable register.  Also set it's pull down enable bit.
+ * Take care to make sure that the output voltage doesn't change if switching
+ * from advanced mode to legacy mode.
+ */
+static int disable_smps_locally_set_pull_down(u16 ctrl_addr, u16 test2_addr,
+		u16 master_enable_addr, u8 master_enable_bit)
+{
+	int rc = 0;
+	u8 vref_sel, vlow_sel, band, vprog, bank, reg;
 
 	if (pmic_chip == NULL)
 		return -ENODEV;
 
-	mutex_lock(&pmic_chip->pm_lock);
+	bank = REGULATOR_BANK_SEL(7);
+	rc = ssbi_write(pmic_chip->dev, test2_addr, &bank, 1);
+	if (rc) {
+		pr_err("%s: FAIL ssbi_write(0x%03X): rc=%d\n", __func__,
+			test2_addr, rc);
+		goto done;
+	}
+
+	rc = ssbi_read(pmic_chip->dev, test2_addr, &reg, 1);
+	if (rc) {
+		pr_err("%s: FAIL pm8058_read(0x%03X): rc=%d\n",
+		       __func__, test2_addr, rc);
+		goto done;
+	}
+
+	/* Check if in advanced mode. */
+	if ((reg & SMPS_ADVANCED_MODE_MASK) == SMPS_ADVANCED_MODE) {
+		/* Determine current output voltage. */
+		rc = ssbi_read(pmic_chip->dev, ctrl_addr, &reg, 1);
+		if (rc) {
+			pr_err("%s: FAIL pm8058_read(0x%03X): rc=%d\n",
+			       __func__, ctrl_addr, rc);
+			goto done;
+		}
+
+		band = (reg & SMPS_ADVANCED_BAND_MASK)
+			>> SMPS_ADVANCED_BAND_SHIFT;
+		switch (band) {
+		case 3:
+			vref_sel = 0;
+			vlow_sel = 0;
+			break;
+		case 2:
+			vref_sel = SMPS_LEGACY_VREF_SEL;
+			vlow_sel = 0;
+			break;
+		case 1:
+			vref_sel = SMPS_LEGACY_VREF_SEL;
+			vlow_sel = SMPS_LEGACY_VLOW_SEL;
+			break;
+		default:
+			pr_err("%s: regulator already disabled\n", __func__);
+			return -EPERM;
+		}
+		vprog = (reg & SMPS_ADVANCED_VPROG_MASK);
+		/* Round up if fine step is in use. */
+		vprog = (vprog + 1) >> 1;
+		if (vprog > SMPS_LEGACY_VPROG_MASK)
+			vprog = SMPS_LEGACY_VPROG_MASK;
+
+		/* Set VLOW_SEL bit. */
+		bank = REGULATOR_BANK_SEL(1);
+		rc = ssbi_write(pmic_chip->dev, test2_addr, &bank, 1);
+		if (rc) {
+			pr_err("%s: FAIL ssbi_write(0x%03X): rc=%d\n",
+			       __func__, test2_addr, rc);
+			goto done;
+		}
+		rc = pm8058_masked_write(test2_addr,
+			REGULATOR_BANK_WRITE | REGULATOR_BANK_SEL(1)
+				| vlow_sel,
+			REGULATOR_BANK_WRITE | REGULATOR_BANK_MASK
+				| SMPS_LEGACY_VLOW_SEL);
+		if (rc)
+			goto done;
+
+		/* Switch to legacy mode */
+		bank = REGULATOR_BANK_SEL(7);
+		rc = ssbi_write(pmic_chip->dev, test2_addr, &bank, 1);
+		if (rc) {
+			pr_err("%s: FAIL ssbi_write(0x%03X): rc=%d\n", __func__,
+				test2_addr, rc);
+			goto done;
+		}
+		rc = pm8058_masked_write(test2_addr,
+				REGULATOR_BANK_WRITE | REGULATOR_BANK_SEL(7)
+					| SMPS_LEGACY_MODE,
+				REGULATOR_BANK_WRITE | REGULATOR_BANK_MASK
+					| SMPS_ADVANCED_MODE_MASK);
+		if (rc)
+			goto done;
+
+		/* Enable locally, enable pull down, keep voltage the same. */
+		rc = pm8058_masked_write(ctrl_addr,
+			REGULATOR_ENABLE | REGULATOR_PULL_DOWN_EN
+				| vref_sel | vprog,
+			REGULATOR_ENABLE_MASK | REGULATOR_PULL_DOWN_MASK
+			       | SMPS_LEGACY_VREF_SEL | SMPS_LEGACY_VPROG_MASK);
+		if (rc)
+			goto done;
+	}
+
+	/* Enable in master control register. */
+	rc = pm8058_masked_write(master_enable_addr, master_enable_bit,
+				 master_enable_bit);
+	if (rc)
+		goto done;
+
+	/* Disable locally and enable pull down. */
+	rc = pm8058_masked_write(ctrl_addr,
+		REGULATOR_DISABLE | REGULATOR_PULL_DOWN_EN,
+		REGULATOR_ENABLE_MASK | REGULATOR_PULL_DOWN_MASK);
+
+done:
+	return rc;
+}
+
+static int disable_ldo_locally_set_pull_down(u16 ctrl_addr,
+		u16 master_enable_addr, u8 master_enable_bit)
+{
+	int rc;
+
+	/* Enable LDO in master control register. */
+	rc = pm8058_masked_write(master_enable_addr, master_enable_bit,
+				 master_enable_bit);
+	if (rc)
+		goto done;
+
+	/* Disable LDO in CTRL register and set pull down */
+	rc = pm8058_masked_write(ctrl_addr,
+		REGULATOR_DISABLE | REGULATOR_PULL_DOWN_EN,
+		REGULATOR_ENABLE_MASK | REGULATOR_PULL_DOWN_MASK);
+
+done:
+	return rc;
+}
+
+int pm8058_reset_pwr_off(int reset)
+{
+	int rc;
+	u8 pon, ctrl, smpl;
+
+	if (pmic_chip == NULL)
+		return -ENODEV;
+
+	/* When shutting down, enable active pulldowns on important rails. */
+	if (!reset) {
+		/* Disable SMPS's 0,1,3 locally and set pulldown enable bits. */
+		disable_smps_locally_set_pull_down(SSBI_REG_ADDR_S0_CTRL,
+		     SSBI_REG_ADDR_S0_TEST2, SSBI_REG_ADDR_VREG_EN_MSM, BIT(7));
+		disable_smps_locally_set_pull_down(SSBI_REG_ADDR_S1_CTRL,
+		     SSBI_REG_ADDR_S1_TEST2, SSBI_REG_ADDR_VREG_EN_MSM, BIT(6));
+		disable_smps_locally_set_pull_down(SSBI_REG_ADDR_S3_CTRL,
+		     SSBI_REG_ADDR_S3_TEST2, SSBI_REG_ADDR_VREG_EN_GRP_5_4,
+		     BIT(7) | BIT(4));
+		/* Disable LDO 21 locally and set pulldown enable bit. */
+		disable_ldo_locally_set_pull_down(SSBI_REG_ADDR_L21_CTRL,
+		     SSBI_REG_ADDR_VREG_EN_GRP_5_4, BIT(1));
+	}
 
 	/* Set regulator L22 to 1.225V in high power mode. */
 	rc = ssbi_read(pmic_chip->dev, SSBI_REG_ADDR_L22_CTRL, &ctrl, 1);
@@ -335,11 +612,104 @@ get_out2:
 	}
 
 get_out:
-	mutex_unlock(&pmic_chip->pm_lock);
-
 	return rc;
 }
 EXPORT_SYMBOL(pm8058_reset_pwr_off);
+
+/**
+ * pm8058_stay_on - enables stay_on feature
+ *
+ * PMIC stay-on feature allows PMIC to ignore MSM PS_HOLD=low
+ * signal so that some special functions like debugging could be
+ * performed.
+ *
+ * This feature should not be used in any product release.
+ *
+ * RETURNS: an appropriate -ERRNO error value on error, or zero for success.
+ */
+int pm8058_stay_on(void)
+{
+	u8	ctrl = 0x92;
+	int	rc;
+
+	rc = ssbi_write(pmic_chip->dev, SSBI_REG_ADDR_GP_TEST_1, &ctrl, 1);
+	pr_info("%s: set stay-on: rc = %d\n", __func__, rc);
+	return rc;
+}
+EXPORT_SYMBOL(pm8058_stay_on);
+
+/*
+   power on hard reset configuration
+   config = DISABLE_HARD_RESET to disable hard reset
+	  = SHUTDOWN_ON_HARD_RESET to turn off the system on hard reset
+	  = RESTART_ON_HARD_RESET to restart the system on hard reset
+ */
+int pm8058_hard_reset_config(enum pon_config config)
+{
+	int rc, ret;
+	u8 pon, pon_5;
+
+	if (config >= MAX_PON_CONFIG)
+		return -EINVAL;
+
+	if (pmic_chip == NULL)
+		return -ENODEV;
+
+	mutex_lock(&pmic_chip->pm_lock);
+
+	rc = ssbi_read(pmic_chip->dev, SSBI_REG_ADDR_PON_CNTL_5, &pon, 1);
+	if (rc) {
+		pr_err("%s: FAIL ssbi_read(0x%x): rc=%d\n",
+		       __func__, SSBI_REG_ADDR_PON_CNTL_5, rc);
+		mutex_unlock(&pmic_chip->pm_lock);
+		return rc;
+	}
+
+	pon_5 = pon;
+	(config != DISABLE_HARD_RESET) ? (pon |= PM8058_HARD_RESET_EN_MASK) :
+					(pon &= ~PM8058_HARD_RESET_EN_MASK);
+
+	rc = ssbi_write(pmic_chip->dev, SSBI_REG_ADDR_PON_CNTL_5, &pon, 1);
+	if (rc) {
+		pr_err("%s: FAIL ssbi_write(0x%x)=0x%x: rc=%d\n",
+		       __func__, SSBI_REG_ADDR_PON_CNTL_5, pon, rc);
+		mutex_unlock(&pmic_chip->pm_lock);
+		return rc;
+	}
+
+	if (config == DISABLE_HARD_RESET) {
+		mutex_unlock(&pmic_chip->pm_lock);
+		return 0;
+	}
+
+	rc = ssbi_read(pmic_chip->dev, SSBI_REG_ADDR_PON_CNTL_4, &pon, 1);
+	if (rc) {
+		pr_err("%s: FAIL ssbi_read(0x%x): rc=%d\n",
+		       __func__, SSBI_REG_ADDR_PON_CNTL_4, rc);
+		goto err_restore_pon_5;
+	}
+
+	(config == RESTART_ON_HARD_RESET) ? (pon |= PM8058_PON_RESET_EN_MASK) :
+					(pon &= ~PM8058_PON_RESET_EN_MASK);
+
+	rc = ssbi_write(pmic_chip->dev, SSBI_REG_ADDR_PON_CNTL_4, &pon, 1);
+	if (rc) {
+		pr_err("%s: FAIL ssbi_write(0x%x)=0x%x: rc=%d\n",
+		       __func__, SSBI_REG_ADDR_PON_CNTL_4, pon, rc);
+		goto err_restore_pon_5;
+	}
+	mutex_unlock(&pmic_chip->pm_lock);
+	return 0;
+
+err_restore_pon_5:
+	ret = ssbi_write(pmic_chip->dev, SSBI_REG_ADDR_PON_CNTL_5, &pon_5, 1);
+	if (ret)
+		pr_err("%s: FAIL ssbi_write(0x%x)=0x%x: rc=%d\n",
+		       __func__, SSBI_REG_ADDR_PON_CNTL_5, pon, ret);
+	mutex_unlock(&pmic_chip->pm_lock);
+	return rc;
+}
+EXPORT_SYMBOL(pm8058_hard_reset_config);
 
 /* Internal functions */
 static inline int
@@ -399,6 +769,12 @@ static void pm8058_irq_unmask(unsigned int irq)
 	irq_bit = irq % 8;
 
 	old_irqs_allowed = chip->irqs_allowed[block];
+	if (old_irqs_allowed & (1 << irq_bit)) {
+		pr_debug("%s: no need to enable an already enabled irq=%d\n",
+					__func__, irq + chip->pdata.irq_base);
+		return;
+	}
+
 	chip->irqs_allowed[block] |= 1 << irq_bit;
 	if (!old_irqs_allowed) {
 		master = block / 8;
@@ -666,15 +1042,17 @@ bail_out:
 
 	mutex_unlock(&chip->pm_lock);
 
-	for (i = 0; i < handled; i++)
-		handle_nested_irq(irqs_to_handle[i]);
-
 	for (i = 0; i < handled; i++) {
-		irqs_to_handle[i] -= chip->pdata.irq_base;
-		block  = irqs_to_handle[i] / 8 ;
-		config = PM8058_IRQF_WRITE | chip->config[irqs_to_handle[i]]
+		int pmic_irq = irqs_to_handle[i] - chip->pdata.irq_base;
+
+		/* ack the interrupt first */
+		block  = pmic_irq / 8 ;
+		config = PM8058_IRQF_WRITE | chip->config[pmic_irq]
 				| PM8058_IRQF_CLR;
 		pm8058_config_irq(chip, &block, &config);
+
+		/* calle the action handler */
+		handle_nested_irq(irqs_to_handle[i]);
 	}
 
 	if (spurious) {
@@ -801,6 +1179,7 @@ static int __devinit pmic8058_dbg_probe(struct pm8058_chip *chip)
 	struct pm8058_dbg_device *dbgdev;
 	struct dentry *dent;
 	struct dentry *temp;
+	int rc;
 
 	if (chip == NULL) {
 		pr_err("%s: no parent data passed in.\n", __func__);
@@ -813,8 +1192,6 @@ static int __devinit pmic8058_dbg_probe(struct pm8058_chip *chip)
 		return -ENOMEM;
 	}
 
-	mutex_init(&dbgdev->dbg_mutex);
-
 	dbgdev->pm_chip = chip;
 	dbgdev->addr = -1;
 
@@ -822,7 +1199,8 @@ static int __devinit pmic8058_dbg_probe(struct pm8058_chip *chip)
 	if (dent == NULL || IS_ERR(dent)) {
 		pr_err("%s: ERR debugfs_create_dir: dent=0x%X\n",
 					__func__, (unsigned)dent);
-		return -ENOMEM;
+		rc = PTR_ERR(dent);
+		goto dir_error;
 	}
 
 	temp = debugfs_create_file("addr", S_IRUSR | S_IWUSR, dent,
@@ -830,6 +1208,7 @@ static int __devinit pmic8058_dbg_probe(struct pm8058_chip *chip)
 	if (temp == NULL || IS_ERR(temp)) {
 		pr_err("%s: ERR debugfs_create_file: dent=0x%X\n",
 					__func__, (unsigned)temp);
+		rc = PTR_ERR(temp);
 		goto debug_error;
 	}
 
@@ -838,8 +1217,11 @@ static int __devinit pmic8058_dbg_probe(struct pm8058_chip *chip)
 	if (temp == NULL || IS_ERR(temp)) {
 		pr_err("%s: ERR debugfs_create_file: dent=0x%X\n",
 					__func__, (unsigned)temp);
+		rc = PTR_ERR(temp);
 		goto debug_error;
 	}
+
+	mutex_init(&dbgdev->dbg_mutex);
 
 	dbgdev->dent = dent;
 
@@ -849,13 +1231,17 @@ static int __devinit pmic8058_dbg_probe(struct pm8058_chip *chip)
 
 debug_error:
 	debugfs_remove_recursive(dent);
-	return -ENOMEM;
+dir_error:
+	kfree(dbgdev);
+
+	return rc;
 }
 
 static int __devexit pmic8058_dbg_remove(void)
 {
 	if (pmic_dbg_device) {
 		debugfs_remove_recursive(pmic_dbg_device->dent);
+		mutex_destroy(&pmic_dbg_device->dbg_mutex);
 		kfree(pmic_dbg_device);
 	}
 	return 0;
@@ -886,14 +1272,13 @@ static struct irq_chip pm8058_irq_chip = {
 	.bus_sync_unlock  = pm8058_irq_bus_sync_unlock,
 };
 
-static int pm8058_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int __devinit pm8058_probe(struct platform_device *pdev)
 {
 	int	i, rc;
-	struct	pm8058_platform_data *pdata = client->dev.platform_data;
+	struct	pm8058_platform_data *pdata = pdev->dev.platform_data;
 	struct	pm8058_chip *chip;
 
-	if (pdata == NULL || !client->irq) {
+	if (pdata == NULL || !gpio_is_valid(pdata->irq)) {
 		pr_err("%s: No platform_data or IRQ.\n", __func__);
 		return -ENODEV;
 	}
@@ -903,18 +1288,13 @@ static int pm8058_probe(struct i2c_client *client,
 		return -ENODEV;
 	}
 
-	if (i2c_check_functionality(client->adapter, I2C_FUNC_I2C) == 0) {
-		pr_err("%s: i2c_check_functionality failed.\n", __func__);
-		return -ENODEV;
-	}
-
 	chip = kzalloc(sizeof *chip, GFP_KERNEL);
 	if (chip == NULL) {
 		pr_err("%s: kzalloc() failed.\n", __func__);
 		return -ENOMEM;
 	}
 
-	chip->dev = client;
+	chip->dev = &pdev->dev;
 
 	/* Read PMIC chip revision */
 	rc = ssbi_read(chip->dev, SSBI_REG_REV, &chip->revision, 1);
@@ -927,14 +1307,14 @@ static int pm8058_probe(struct i2c_client *client,
 		      sizeof(chip->pdata));
 
 	mutex_init(&chip->pm_lock);
-	set_irq_data(chip->dev->irq, (void *)chip);
-	set_irq_wake(chip->dev->irq, 1);
+	set_irq_data(pdata->irq, (void *)chip);
+	set_irq_wake(pdata->irq, 1);
 
 	chip->pm_max_irq = 0;
 	chip->pm_max_blocks = 0;
 	chip->pm_max_masters = 0;
 
-	i2c_set_clientdata(client, chip);
+	platform_set_drvdata(pdev, chip);
 
 	pmic_chip = chip;
 
@@ -950,13 +1330,13 @@ static int pm8058_probe(struct i2c_client *client,
 	/* Add sub devices with the chip parameter as driver data */
 	for (i = 0; i < pdata->num_subdevs; i++)
 		pdata->sub_devices[i].driver_data = chip;
-	rc = mfd_add_devices(&chip->dev->dev, 0, pdata->sub_devices,
+	rc = mfd_add_devices(chip->dev, 0, pdata->sub_devices,
 			     pdata->num_subdevs, NULL, 0);
 
 	/* Add charger sub device with the chip parameter as driver data */
 	if (pdata->charger_sub_device) {
 		pdata->charger_sub_device->driver_data = chip;
-		rc = mfd_add_devices(&chip->dev->dev, 0,
+		rc = mfd_add_devices(chip->dev, 0,
 					pdata->charger_sub_device,
 					1, NULL, 0);
 	}
@@ -971,29 +1351,34 @@ static int pm8058_probe(struct i2c_client *client,
 		}
 	}
 
-	rc = request_threaded_irq(chip->dev->irq, NULL, pm8058_isr_thread,
+	rc = request_threaded_irq(pdata->irq, NULL, pm8058_isr_thread,
 			IRQF_ONESHOT | IRQF_DISABLED | pdata->irq_trigger_flags,
 			"pm8058-irq", chip);
 	if (rc < 0)
 		pr_err("%s: could not request irq %d: %d\n", __func__,
-				chip->dev->irq, rc);
+				pdata->irq, rc);
 
 	rc = pmic8058_dbg_probe(chip);
 	if (rc < 0)
 		pr_err("%s: could not set up debugfs: %d\n", __func__, rc);
 
+	rc = pm8058_hard_reset_config(SHUTDOWN_ON_HARD_RESET);
+	if (rc < 0)
+		pr_err("%s: failed to config shutdown on hard reset: %d\n",
+								__func__, rc);
+
 	return 0;
 }
 
-static int __devexit pm8058_remove(struct i2c_client *client)
+static int __devexit pm8058_remove(struct platform_device *pdev)
 {
 	struct	pm8058_chip *chip;
 
-	chip = i2c_get_clientdata(client);
+	chip = platform_get_drvdata(pdev);
 	if (chip) {
 		if (chip->pm_max_irq) {
-			set_irq_wake(chip->dev->irq, 0);
-			free_irq(chip->dev->irq, chip);
+			set_irq_wake(chip->pdata.irq, 0);
+			free_irq(chip->pdata.irq, chip);
 		}
 		mutex_destroy(&chip->pm_lock);
 		chip->dev = NULL;
@@ -1007,14 +1392,12 @@ static int __devexit pm8058_remove(struct i2c_client *client)
 }
 
 #ifdef CONFIG_PM
-static int pm8058_suspend(struct device *dev)
-{
-	struct i2c_client *client;
-	struct	pm8058_chip *chip;
-	int	i, irq;
+static int pm8058_suspend(struct sys_device *dev,
+					pm_message_t state)
 
-	client = to_i2c_client(dev);
-	chip = i2c_get_clientdata(client);
+{
+	struct pm8058_chip *chip = pmic_chip;
+	int	i, irq;
 
 	for (i = 0; i < MAX_PM_IRQ; i++) {
 		if (chip->config[i] && !chip->wake_enable[i]) {
@@ -1029,7 +1412,7 @@ static int pm8058_suspend(struct device *dev)
 	}
 
 	if (!chip->count_wakeable)
-		disable_irq(chip->dev->irq);
+		disable_irq(chip->pdata.irq);
 
 	return 0;
 }
@@ -1052,19 +1435,15 @@ void pm8058_show_resume_irq(void)
 	}
 }
 
-static int pm8058_resume(struct device *dev)
+static int pm8058_resume(struct sys_device *dev)
 {
-	struct i2c_client *client;
-	struct	pm8058_chip *chip;
+	struct pm8058_chip *chip = pmic_chip;
 	int	i, irq;
-
-	client = to_i2c_client(dev);
-	chip = i2c_get_clientdata(client);
 
 	for (i = 0; i < MAX_PM_IRQ; i++) {
 		if (chip->config[i] && !chip->wake_enable[i]) {
 			if (!((chip->config[i] & PM8058_IRQF_MASK_ALL)
-			      == PM8058_IRQF_MASK_ALL)) {
+				== PM8058_IRQF_MASK_ALL)) {
 				irq = i + chip->pdata.irq_base;
 				pm8058_irq_bus_lock(irq);
 				pm8058_irq_unmask(irq);
@@ -1074,7 +1453,7 @@ static int pm8058_resume(struct device *dev)
 	}
 
 	if (!chip->count_wakeable)
-		enable_irq(chip->dev->irq);
+		enable_irq(chip->pdata.irq);
 
 	return 0;
 }
@@ -1083,39 +1462,51 @@ static int pm8058_resume(struct device *dev)
 #define	pm8058_resume		NULL
 #endif
 
-static const struct i2c_device_id pm8058_ids[] = {
-	{ "pm8058-core", 0 },
-	{ },
-};
-MODULE_DEVICE_TABLE(i2c, pm8058_ids);
 
-static struct dev_pm_ops pm8058_pm = {
-	.suspend = pm8058_suspend,
-	.resume = pm8058_resume,
+static struct sysdev_class pm8058_sysdev_class = {
+	.name		= "pm8058",
+	.suspend	= pm8058_suspend,
+	.resume		= pm8058_resume,
 };
 
-static struct i2c_driver pm8058_driver = {
-	.driver.name	= "pm8058-core",
-	.driver.pm      = &pm8058_pm,
-	.id_table	= pm8058_ids,
-	.probe		= pm8058_probe,
-	.remove		= __devexit_p(pm8058_remove),
+static struct sys_device pm8058_sys_device = {
+	.id	= 0,
+	.cls	= &pm8058_sysdev_class,
 };
 
-static int __init pm8058_init(void)
+static int __init pm8058_late_init(void)
 {
-	int rc = i2c_add_driver(&pm8058_driver);
-	pr_notice("%s: i2c_add_driver: rc = %d\n", __func__, rc);
+	int rc;
+
+	rc = sysdev_class_register(&pm8058_sysdev_class);
+	rc |= sysdev_register(&pm8058_sys_device);
+	if (rc)
+		pr_err("%s: could not set up sysdev: %d\n", __func__, rc);
 
 	return rc;
 }
 
+late_initcall(pm8058_late_init);
+
+static struct platform_driver pm8058_driver = {
+	.probe		= pm8058_probe,
+	.remove		= __devexit_p(pm8058_remove),
+	.driver		= {
+		.name	= "pm8058-core",
+		.owner	= THIS_MODULE,
+	},
+};
+
+static int __init pm8058_init(void)
+{
+	return platform_driver_register(&pm8058_driver);
+}
+arch_initcall(pm8058_init);
+
 static void __exit pm8058_exit(void)
 {
-	i2c_del_driver(&pm8058_driver);
+	platform_driver_unregister(&pm8058_driver);
 }
-
-arch_initcall(pm8058_init);
 module_exit(pm8058_exit);
 
 MODULE_LICENSE("GPL v2");

@@ -9,18 +9,12 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
- *
  */
 #include <linux/firmware.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
-#include <mach/internal_power_rail.h>
+#include <linux/regulator/consumer.h>
 #include <mach/clk.h>
-#include <mach/msm_reqs.h>
 #include <linux/interrupt.h>
 #include "vidc_type.h"
 #include "vcd_res_tracker.h"
@@ -37,23 +31,12 @@ static unsigned int mfc_clk_freq_table[3] = {
 	61440000, 122880000, 170667000
 };
 
-#ifndef CONFIG_MSM_NPA_SYSTEM_BUS
 static unsigned int axi_clk_freq_table_enc[2] = {
 	122880, 192000
 };
 static unsigned int axi_clk_freq_table_dec[2] = {
 	122880, 192000
 };
-#else
-static unsigned int axi_clk_freq_table_enc[2] = {
-	MSM_AXI_FLOW_VIDEO_RECORDING_720P,
-	MSM_AXI_FLOW_VIDEO_RECORDING_720P
-};
-static unsigned int axi_clk_freq_table_dec[2] = {
-	MSM_AXI_FLOW_VIDEO_PLAYBACK_720P,
-	MSM_AXI_FLOW_VIDEO_PLAYBACK_720P
-};
-#endif
 
 static struct res_trk_context resource_context;
 
@@ -137,13 +120,6 @@ static u32 res_trk_disable_videocore(void)
 	}
 	msleep(20);
 
-	rc = internal_pwr_rail_ctl(PWR_RAIL_MFC_CLK, 0);
-	if (rc) {
-		VCDRES_MSG_ERROR("\n clk_reset failed %d\n", rc);
-		mutex_unlock(&resource_context.lock);
-		return false;
-	}
-
 	clk_disable(resource_context.pclk);
 	clk_disable(resource_context.hclk);
 	clk_disable(resource_context.hclk_div2);
@@ -151,6 +127,13 @@ static u32 res_trk_disable_videocore(void)
 	clk_put(resource_context.hclk_div2);
 	clk_put(resource_context.hclk);
 	clk_put(resource_context.pclk);
+
+	rc = regulator_disable(resource_context.regulator);
+	if (rc) {
+		VCDRES_MSG_ERROR("\n regulator disable failed %d\n", rc);
+		mutex_unlock(&resource_context.lock);
+		return false;
+	}
 
 	resource_context.hclk_div2 = NULL;
 	resource_context.hclk = NULL;
@@ -283,16 +266,15 @@ static u32 res_trk_enable_videocore(void)
 	mutex_lock(&resource_context.lock);
 	if (!resource_context.rail_enabled) {
 		int rc = -1;
-		rc = internal_pwr_rail_mode(PWR_RAIL_MFC_CLK,
-			PWR_RAIL_CTL_MANUAL);
+
+		rc = regulator_enable(resource_context.regulator);
 		if (rc) {
-			VCDRES_MSG_ERROR("%s(): internal_pwr_rail_mode \
-					failed %d\n", __func__, rc);
-			mutex_unlock(&resource_context.lock);
-			return false;
+			VCDRES_MSG_ERROR("%s(): regulator_enable failed %d\n",
+							 __func__, rc);
+			goto bail_out;
 		}
-		VCDRES_MSG_LOW("%s(): internal_pwr_rail_mode Success %d\n",
-			__func__, rc);
+		VCDRES_MSG_LOW("%s(): regulator enable Success %d\n",
+							__func__, rc);
 
 		resource_context.pclk = clk_get(resource_context.device,
 			"mfc_pclk");
@@ -300,7 +282,7 @@ static u32 res_trk_enable_videocore(void)
 		if (IS_ERR(resource_context.pclk)) {
 			VCDRES_MSG_ERROR("%s(): mfc_pclk get failed\n"
 							 , __func__);
-			goto bail_out;
+			goto disable_regulator;
 		}
 
 		resource_context.hclk = clk_get(resource_context.device,
@@ -344,16 +326,6 @@ static u32 res_trk_enable_videocore(void)
 			goto disable_hclk_pclk;
 		}
 
-		rc = internal_pwr_rail_ctl(PWR_RAIL_MFC_CLK, 1);
-		if (rc) {
-			VCDRES_MSG_ERROR("\n internal_pwr_rail_ctl failed %d\n"
-							 , rc);
-			goto disable_and_release_all_clks;
-		}
-		VCDRES_MSG_LOW("%s(): internal_pwr_rail_ctl Success %d\n"
-					   , __func__, rc);
-		msleep(20);
-
 		rc = clk_reset(resource_context.pclk, CLK_RESET_DEASSERT);
 		if (rc) {
 			VCDRES_MSG_ERROR("\n clk_reset failed %d\n", rc);
@@ -385,6 +357,8 @@ release_hclk_pclk:
 release_pclk:
 	clk_put(resource_context.pclk);
 	resource_context.pclk = NULL;
+disable_regulator:
+	regulator_disable(resource_context.regulator);
 bail_out:
 	mutex_unlock(&resource_context.lock);
 	return false;
@@ -516,7 +490,7 @@ u32 res_trk_set_perf_level(u32 req_perf_lvl, u32 *pn_set_perf_lvl,
 			mfc_freq = mfc_clk_freq_table[0];
 			axi_freq = axi_clk_freq_table_enc[0];
 		}
-		VCDRES_MSG_HIGH("\n ENCODER: axi_freq = %u"
+		VCDRES_MSG_MED("\n ENCODER: axi_freq = %u"
 			", mfc_freq = %u, calc_mfc_freq = %u,"
 			" req_perf_lvl = %u", axi_freq,
 			mfc_freq, calc_mfc_freq,
@@ -536,7 +510,7 @@ u32 res_trk_set_perf_level(u32 req_perf_lvl, u32 *pn_set_perf_lvl,
 				axi_freq = axi_clk_freq_table_dec[1];
 			}
 		}
-		VCDRES_MSG_HIGH("\n DECODER: axi_freq = %u"
+		VCDRES_MSG_MED("\n DECODER: axi_freq = %u"
 			", mfc_freq = %u, calc_mfc_freq = %u,"
 			" req_perf_lvl = %u", axi_freq,
 			mfc_freq, calc_mfc_freq,
@@ -545,7 +519,7 @@ u32 res_trk_set_perf_level(u32 req_perf_lvl, u32 *pn_set_perf_lvl,
 
 #ifdef AXI_CLK_SCALING
     if (req_perf_lvl != VCD_RESTRK_MIN_PERF_LEVEL) {
-		VCDRES_MSG_HIGH("\n %s(): Setting AXI freq to %u",
+		VCDRES_MSG_MED("\n %s(): Setting AXI freq to %u",
 			__func__, axi_freq);
 		clk_set_rate(ebi1_clk, axi_freq * 1000);
 	}
@@ -553,7 +527,7 @@ u32 res_trk_set_perf_level(u32 req_perf_lvl, u32 *pn_set_perf_lvl,
 
 #ifdef USE_RES_TRACKER
     if (req_perf_lvl != VCD_RESTRK_MIN_PERF_LEVEL) {
-		VCDRES_MSG_HIGH("\n %s(): Setting MFC freq to %u",
+		VCDRES_MSG_MED("\n %s(): Setting MFC freq to %u",
 			__func__, mfc_freq);
 		if (!res_trk_sel_clk_rate(mfc_freq)) {
 			VCDRES_MSG_ERROR("%s(): res_trk_sel_clk_rate FAILED\n",
@@ -716,8 +690,21 @@ void res_trk_init(struct device *device, u32 irq)
 	resource_context.device = device;
 	resource_context.irq_num = irq;
 	resource_context.core_type = VCD_CORE_720P;
+	resource_context.regulator = regulator_get(NULL, "fs_mfc");
+	resource_context.vidc_platform_data =
+		(struct msm_vidc_platform_data *) device->platform_data;
+	if (resource_context.vidc_platform_data) {
+		resource_context.memtype =
+		resource_context.vidc_platform_data->memtype;
+	} else {
+		resource_context.memtype = -1;
+	}
 }
 
 u32 res_trk_get_core_type(void){
 	return resource_context.core_type;
+}
+
+u32 res_trk_get_mem_type(void){
+	return resource_context.memtype;
 }

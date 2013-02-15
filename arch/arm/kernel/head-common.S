@@ -15,55 +15,6 @@
 #define ATAG_CORE_SIZE ((2*4 + 3*4) >> 2)
 #define ATAG_CORE_SIZE_EMPTY ((2*4) >> 2)
 
-	.align	2
-	.type	__switch_data, %object
-__switch_data:
-	.long	__mmap_switched
-	.long	__data_loc			@ r4
-	.long	_data				@ r5
-	.long	__bss_start			@ r6
-	.long	_end				@ r7
-	.long	processor_id			@ r4
-	.long	__machine_arch_type		@ r5
-	.long	__atags_pointer			@ r6
-	.long	cr_alignment			@ r7
-	.long	init_thread_union + THREAD_START_SP @ sp
-
-/*
- * The following fragment of code is executed with the MMU on in MMU mode,
- * and uses absolute addresses; this is not position independent.
- *
- *  r0  = cp#15 control register
- *  r1  = machine ID
- *  r2  = atags pointer
- *  r9  = processor ID
- */
-__mmap_switched:
-	adr	r3, __switch_data + 4
-
-	ldmia	r3!, {r4, r5, r6, r7}
-	cmp	r4, r5				@ Copy data segment if needed
-1:	cmpne	r5, r6
-	ldrne	fp, [r4], #4
-	strne	fp, [r5], #4
-	bne	1b
-
-	mov	fp, #0				@ Clear BSS (and zero fp)
-1:	cmp	r6, r7
-	strcc	fp, [r6],#4
-	bcc	1b
-
- ARM(	ldmia	r3, {r4, r5, r6, r7, sp})
- THUMB(	ldmia	r3, {r4, r5, r6, r7}	)
- THUMB(	ldr	sp, [r3, #16]		)
-	str	r9, [r4]			@ Save processor ID
-	str	r1, [r5]			@ Save machine type
-	str	r2, [r6]			@ Save atags pointer
-	bic	r4, r0, #CR_A			@ Clear 'A' bit
-	stmia	r7, {r0, r4}			@ Save control register values
-	b	start_kernel
-ENDPROC(__mmap_switched)
-
 /*
  * Exception handling.  Something went wrong and we can't proceed.  We
  * ought to tell the user, but since we don't have any guarantee that
@@ -73,21 +24,7 @@ ENDPROC(__mmap_switched)
  * and hope for the best (useful if bootloader fails to pass a proper
  * machine ID for example).
  */
-__error_p:
-#ifdef CONFIG_DEBUG_LL
-	adr	r0, str_p1
-	bl	printascii
-	mov	r0, r9
-	bl	printhex8
-	adr	r0, str_p2
-	bl	printascii
-	b	__error
-str_p1:	.asciz	"\nError: unrecognized/unsupported processor variant (0x"
-str_p2:	.asciz	").\n"
-	.align
-#endif
-ENDPROC(__error_p)
-
+	__HEAD
 __error_a:
 #ifdef CONFIG_DEBUG_LL
 	mov	r4, r1				@ preserve machine ID
@@ -97,7 +34,7 @@ __error_a:
 	bl	printhex8
 	adr	r0, str_a2
 	bl	printascii
-	adr	r3, 4f
+	adr	r3, __lookup_machine_type_data
 	ldmia	r3, {r4, r5, r6}		@ get machine desc list
 	sub	r4, r3, r4			@ get offset between virt&phys
 	add	r5, r5, r4			@ convert virt addresses to
@@ -123,170 +60,9 @@ str_a1:	.asciz	"\nError: unrecognized/unsupported machine ID (r1 = 0x"
 str_a2:	.asciz	").\n\nAvailable machine support:\n\nID (hex)\tNAME\n"
 str_a3:	.asciz	"\nPlease check your kernel config and/or bootloader.\n"
 	.align
+#else
+	b	__error
 #endif
-
-__error:
-#ifdef CONFIG_ARCH_RPC
-/*
- * Turn the screen red on a error - RiscPC only.
- */
-	mov	r0, #0x02000000
-	mov	r3, #0x11
-	orr	r3, r3, r3, lsl #8
-	orr	r3, r3, r3, lsl #16
-	str	r3, [r0], #4
-	str	r3, [r0], #4
-	str	r3, [r0], #4
-	str	r3, [r0], #4
-#endif
-1:	mov	r0, r0
-	b	1b
-ENDPROC(__error)
-
-
-/*
- * Read processor ID register (CP#15, CR0), and look up in the linker-built
- * supported processor list.  Note that we can't use the absolute addresses
- * for the __proc_info lists since we aren't running with the MMU on
- * (and therefore, we are not in the correct address space).  We have to
- * calculate the offset.
- *
- *	r9 = cpuid
- * Returns:
- *	r3, r4, r6 corrupted
- *	r5 = proc_info pointer in physical address space
- *	r9 = cpuid (preserved)
- */
-__lookup_processor_type:
-	adr	r3, 3f
-	ldmia	r3, {r5 - r7}
-	add	r3, r3, #8
-	sub	r3, r3, r7			@ get offset between virt&phys
-	add	r5, r5, r3			@ convert virt addresses to
-	add	r6, r6, r3			@ physical address space
-1:	ldmia	r5, {r3, r4}			@ value, mask
-	and	r4, r4, r9			@ mask wanted bits
-	teq	r3, r4
-	beq	2f
-	add	r5, r5, #PROC_INFO_SZ		@ sizeof(proc_info_list)
-	cmp	r5, r6
-	blo	1b
-	mov	r5, #0				@ unknown processor
-2:	mov	pc, lr
-ENDPROC(__lookup_processor_type)
-
-/*
- * This provides a C-API version of the above function.
- */
-ENTRY(lookup_processor_type)
-	stmfd	sp!, {r4 - r7, r9, lr}
-	mov	r9, r0
-	bl	__lookup_processor_type
-	mov	r0, r5
-	ldmfd	sp!, {r4 - r7, r9, pc}
-ENDPROC(lookup_processor_type)
-
-/*
- * Look in <asm/procinfo.h> and arch/arm/kernel/arch.[ch] for
- * more information about the __proc_info and __arch_info structures.
- */
-	.align	2
-3:	.long	__proc_info_begin
-	.long	__proc_info_end
-4:	.long	.
-	.long	__arch_info_begin
-	.long	__arch_info_end
-
-/*
- * XXX
- * Convert unofficial machine type numbers for various MSM platforms
- * to the official ones before __lookup_machine_type is executed.
- * There has been no attempt to optimise this code.
- *
- *  r1 is changed
- *  r3, r4 corrupted
- * This code is temporary while the bootloaders are being converted.
- *
- */
-__fixup_machine_type:
-	ldr	r3, =1007000			@ msm7201a_surf
-	ldr	r4, =2701
-	cmp	r1, r3
-	moveq	r1, r4
-	ldr	r3, =1007001			@ msm7201a_ffa
-	ldr	r4, =2702
-	cmp	r1, r3
-	moveq	r1, r4
-	ldr	r3, =1007002			@ msm7x25_surf
-	ldr	r4, =2703
-	cmp	r1, r3
-	moveq	r1, r4
-	ldr	r3, =1007003			@ msm7x25_ffa
-	ldr	r4, =2704
-	cmp	r1, r3
-	moveq	r1, r4
-	ldr	r3, =1007014			@ msm7x27_surf
-	ldr	r4, =2705
-	cmp	r1, r3
-	moveq	r1, r4
-	ldr	r3, =1007015			@ msm7x27_ffa
-	ldr	r4, =2706
-	cmp	r1, r3
-	moveq	r1, r4
-	ldr	r3, =1007016			@ msm7x30_surf
-	ldr	r4, =2679
-	cmp	r1, r3
-	moveq	r1, r4
-	ldr	r3, =1007017			@ msm7x30_ffa
-	ldr	r4, =2707
-	cmp	r1, r3
-	moveq	r1, r4
-	ldr	r3, =1007018			@ msm7x30_fluid
-	ldr	r4, =2741
-	cmp	r1, r3
-	moveq	r1, r4
-	ldr	r3, =1008000			@ qsd8x50_surf
-	ldr	r4, =2708
-	cmp	r1, r3
-	moveq	r1, r4
-	ldr	r3, =1008001			@ qsd8x50_comet
-	ldr	r4, =2709
-	cmp	r1, r3
-	moveq	r1, r4
-	ldr	r3, =1008002			@ qsd8x50_ffa
-	ldr	r4, =2710
-	cmp	r1, r3
-	moveq	r1, r4
-	ldr	r3, =1008003			@ qsd8x50a_surf
-	ldr	r4, =2711
-	cmp	r1, r3
-	moveq	r1, r4
-	ldr	r3, =1008004			@ qsd8x50a_ffa
-	ldr	r4, =2712
-	cmp	r1, r3
-	moveq	r1, r4
-	ldr	r3, =1009000			@ msm8x60_rumi3
-	ldr	r4, =3016
-	cmp	r1, r3
-	moveq	r1, r4
-	ldr	r3, =1009001			@ msm8x60_sim
-	ldr	r4, =2756
-	cmp	r1, r3
-	moveq	r1, r4
-	ldr	r3, =1009002			@ msm8x60_surf
-	ldr	r4, =2755
-	cmp	r1, r3
-	moveq	r1, r4
-	ldr	r3, =1009003			@ msm8x60_ffa
-	ldr	r4, =3017
-	cmp	r1, r3
-	moveq	r1, r4
-	ldr	r3, =1009004			@ msm8x60_fluid
-	ldr	r4, =3124
-	cmp	r1, r3
-	moveq	r1, r4
-	mov	pc, lr
-ENDPROC(__fixup_machine_type)
 
 /*
  * Lookup machine architecture in the linker-build list of architectures.
@@ -300,7 +76,7 @@ ENDPROC(__fixup_machine_type)
  *  r5 = mach_info pointer in physical address space
  */
 __lookup_machine_type:
-	adr	r3, 4b
+	adr	r3, __lookup_machine_type_data
 	ldmia	r3, {r4, r5, r6}
 	sub	r3, r3, r4			@ get offset between virt&phys
 	add	r5, r5, r3			@ convert virt addresses to
@@ -316,15 +92,16 @@ __lookup_machine_type:
 ENDPROC(__lookup_machine_type)
 
 /*
- * This provides a C-API version of the above function.
+ * Look in arch/arm/kernel/arch.[ch] for information about the
+ * __arch_info structures.
  */
-ENTRY(lookup_machine_type)
-	stmfd	sp!, {r4 - r6, lr}
-	mov	r1, r0
-	bl	__lookup_machine_type
-	mov	r0, r5
-	ldmfd	sp!, {r4 - r6, pc}
-ENDPROC(lookup_machine_type)
+	.align	2
+	.type	__lookup_machine_type_data, %object
+__lookup_machine_type_data:
+	.long	.
+	.long	__arch_info_begin
+	.long	__arch_info_end
+	.size	__lookup_machine_type_data, . - __lookup_machine_type_data
 
 /* Determine validity of the r2 atags pointer.  The heuristic requires
  * that the pointer be aligned, in the first 16k of physical RAM and
@@ -356,3 +133,150 @@ __vet_atags:
 1:	mov	r2, #0
 	mov	pc, lr
 ENDPROC(__vet_atags)
+
+/*
+ * The following fragment of code is executed with the MMU on in MMU mode,
+ * and uses absolute addresses; this is not position independent.
+ *
+ *  r0  = cp#15 control register
+ *  r1  = machine ID
+ *  r2  = atags pointer
+ *  r9  = processor ID
+ */
+	__INIT
+__mmap_switched:
+	adr	r3, __mmap_switched_data
+
+	ldmia	r3!, {r4, r5, r6, r7}
+	cmp	r4, r5				@ Copy data segment if needed
+1:	cmpne	r5, r6
+	ldrne	fp, [r4], #4
+	strne	fp, [r5], #4
+	bne	1b
+
+	mov	fp, #0				@ Clear BSS (and zero fp)
+1:	cmp	r6, r7
+	strcc	fp, [r6],#4
+	bcc	1b
+
+ ARM(	ldmia	r3, {r4, r5, r6, r7, sp})
+ THUMB(	ldmia	r3, {r4, r5, r6, r7}	)
+ THUMB(	ldr	sp, [r3, #16]		)
+	str	r9, [r4]			@ Save processor ID
+	str	r1, [r5]			@ Save machine type
+	str	r2, [r6]			@ Save atags pointer
+	bic	r4, r0, #CR_A			@ Clear 'A' bit
+	stmia	r7, {r0, r4}			@ Save control register values
+	b	start_kernel
+ENDPROC(__mmap_switched)
+
+	.align	2
+	.type	__mmap_switched_data, %object
+__mmap_switched_data:
+	.long	__data_loc			@ r4
+	.long	_sdata				@ r5
+	.long	__bss_start			@ r6
+	.long	_end				@ r7
+	.long	processor_id			@ r4
+	.long	__machine_arch_type		@ r5
+	.long	__atags_pointer			@ r6
+	.long	cr_alignment			@ r7
+	.long	init_thread_union + THREAD_START_SP @ sp
+	.size	__mmap_switched_data, . - __mmap_switched_data
+
+/*
+ * This provides a C-API version of __lookup_machine_type
+ */
+ENTRY(lookup_machine_type)
+	stmfd	sp!, {r4 - r6, lr}
+	mov	r1, r0
+	bl	__lookup_machine_type
+	mov	r0, r5
+	ldmfd	sp!, {r4 - r6, pc}
+ENDPROC(lookup_machine_type)
+
+/*
+ * This provides a C-API version of __lookup_processor_type
+ */
+ENTRY(lookup_processor_type)
+	stmfd	sp!, {r4 - r6, r9, lr}
+	mov	r9, r0
+	bl	__lookup_processor_type
+	mov	r0, r5
+	ldmfd	sp!, {r4 - r6, r9, pc}
+ENDPROC(lookup_processor_type)
+
+/*
+ * Read processor ID register (CP#15, CR0), and look up in the linker-built
+ * supported processor list.  Note that we can't use the absolute addresses
+ * for the __proc_info lists since we aren't running with the MMU on
+ * (and therefore, we are not in the correct address space).  We have to
+ * calculate the offset.
+ *
+ *	r9 = cpuid
+ * Returns:
+ *	r3, r4, r6 corrupted
+ *	r5 = proc_info pointer in physical address space
+ *	r9 = cpuid (preserved)
+ */
+	__CPUINIT
+__lookup_processor_type:
+	adr	r3, __lookup_processor_type_data
+	ldmia	r3, {r4 - r6}
+	sub	r3, r3, r4			@ get offset between virt&phys
+	add	r5, r5, r3			@ convert virt addresses to
+	add	r6, r6, r3			@ physical address space
+1:	ldmia	r5, {r3, r4}			@ value, mask
+	and	r4, r4, r9			@ mask wanted bits
+	teq	r3, r4
+	beq	2f
+	add	r5, r5, #PROC_INFO_SZ		@ sizeof(proc_info_list)
+	cmp	r5, r6
+	blo	1b
+	mov	r5, #0				@ unknown processor
+2:	mov	pc, lr
+ENDPROC(__lookup_processor_type)
+
+/*
+ * Look in <asm/procinfo.h> for information about the __proc_info structure.
+ */
+	.align	2
+	.type	__lookup_processor_type_data, %object
+__lookup_processor_type_data:
+	.long	.
+	.long	__proc_info_begin
+	.long	__proc_info_end
+	.size	__lookup_processor_type_data, . - __lookup_processor_type_data
+
+__error_p:
+#ifdef CONFIG_DEBUG_LL
+	adr	r0, str_p1
+	bl	printascii
+	mov	r0, r9
+	bl	printhex8
+	adr	r0, str_p2
+	bl	printascii
+	b	__error
+str_p1:	.asciz	"\nError: unrecognized/unsupported processor variant (0x"
+str_p2:	.asciz	").\n"
+	.align
+#endif
+ENDPROC(__error_p)
+
+__error:
+#ifdef CONFIG_ARCH_RPC
+/*
+ * Turn the screen red on a error - RiscPC only.
+ */
+	mov	r0, #0x02000000
+	mov	r3, #0x11
+	orr	r3, r3, r3, lsl #8
+	orr	r3, r3, r3, lsl #16
+	str	r3, [r0], #4
+	str	r3, [r0], #4
+	str	r3, [r0], #4
+	str	r3, [r0], #4
+#endif
+1:	mov	r0, r0
+	b	1b
+ENDPROC(__error)

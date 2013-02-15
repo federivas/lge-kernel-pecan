@@ -9,11 +9,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
- *
  */
 
 #include <linux/module.h>
@@ -60,14 +55,10 @@ static struct dev_pm_ops ebi2_lcd_dev_pm_ops = {
 static struct platform_driver ebi2_lcd_driver = {
 	.probe = ebi2_lcd_probe,
 	.remove = ebi2_lcd_remove,
-#ifndef CONFIG_HAS_EARLYSUSPEND
-#ifdef CONFIG_PM
 	.suspend = NULL,
 	.suspend_late = NULL,
 	.resume_early = NULL,
 	.resume = NULL,
-#endif
-#endif 
 	.shutdown = NULL,
 	.driver = {
 		   .name = "ebi2_lcd",
@@ -235,10 +226,9 @@ static int ebi2_lcd_probe(struct platform_device *pdev)
 		goto ebi2_lcd_probe_err;
 	}
 
-#if 0 /* FIXME: */
 	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);
-#endif
+
 
 	pdev_list[pdev_list_cnt++] = pdev;
 	return 0;
@@ -261,9 +251,7 @@ static int ebi2_lcd_remove(struct platform_device *pdev)
 		return 0;
 
 	iounmap(mfd->cmd_port);
-#if 0 /* FIXME: */
 	pm_runtime_disable(&pdev->dev);
-#endif
 	return 0;
 }
 

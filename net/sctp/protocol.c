@@ -46,6 +46,8 @@
  * be incorporated into the next SCTP release.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/netdevice.h>
@@ -90,7 +92,7 @@ static struct sctp_af *sctp_af_v6_specific;
 struct kmem_cache *sctp_chunk_cachep __read_mostly;
 struct kmem_cache *sctp_bucket_cachep __read_mostly;
 
-int sysctl_sctp_mem[3];
+long sysctl_sctp_mem[3];
 int sysctl_sctp_rmem[3];
 int sysctl_sctp_wmem[3];
 
@@ -490,7 +492,7 @@ static struct dst_entry *sctp_v4_get_dst(struct sctp_association *asoc,
 			  __func__, &fl.fl4_dst, &fl.fl4_src);
 
 	if (!ip_route_output_key(&init_net, &rt, &fl)) {
-		dst = &rt->u.dst;
+		dst = &rt->dst;
 	}
 
 	/* If there is no association or if a source address is passed, no
@@ -534,7 +536,7 @@ static struct dst_entry *sctp_v4_get_dst(struct sctp_association *asoc,
 			fl.fl4_src = laddr->a.v4.sin_addr.s_addr;
 			fl.fl_ip_sport = laddr->a.v4.sin_port;
 			if (!ip_route_output_key(&init_net, &rt, &fl)) {
-				dst = &rt->u.dst;
+				dst = &rt->dst;
 				goto out_unlock;
 			}
 		}
@@ -707,8 +709,7 @@ static int sctp_ctl_sock_init(void)
 					   &init_net);
 
 	if (err < 0) {
-		printk(KERN_ERR
-		       "SCTP: Failed to create the SCTP control socket.\n");
+		pr_err("Failed to create the SCTP control socket\n");
 		return err;
 	}
 	return 0;
@@ -798,7 +799,7 @@ static void sctp_inet_skb_msgname(struct sk_buff *skb, char *msgname, int *len)
 static int sctp_inet_af_supported(sa_family_t family, struct sctp_sock *sp)
 {
 	/* PF_INET only supports AF_INET addresses. */
-	return (AF_INET == family);
+	return AF_INET == family;
 }
 
 /* Address matching with wildcards allowed. */
@@ -1162,16 +1163,14 @@ SCTP_STATIC __init int sctp_init(void)
 
 	/* Set the pressure threshold to be a fraction of global memory that
 	 * is up to 1/2 at 256 MB, decreasing toward zero with the amount of
-	 * memory, with a floor of 128 pages, and a ceiling that prevents an
-	 * integer overflow.
-	 * Note this initalizes the data in sctpv6_prot too
+	 * memory, with a floor of 128 pages.
+	 * Note this initializes the data in sctpv6_prot too
 	 * Unabashedly stolen from tcp_init
 	 */
 	nr_pages = totalram_pages - totalhigh_pages;
 	limit = min(nr_pages, 1UL<<(28-PAGE_SHIFT)) >> (20-PAGE_SHIFT);
 	limit = (limit * (nr_pages >> (20-PAGE_SHIFT))) >> (PAGE_SHIFT-11);
 	limit = max(limit, 128UL);
-	limit = min(limit, INT_MAX * 4UL / 3 / 2);
 	sysctl_sctp_mem[0] = limit / 4 * 3;
 	sysctl_sctp_mem[1] = limit;
 	sysctl_sctp_mem[2] = sysctl_sctp_mem[0] * 2;
@@ -1205,10 +1204,10 @@ SCTP_STATIC __init int sctp_init(void)
 		if ((sctp_assoc_hashsize > (64 * 1024)) && order > 0)
 			continue;
 		sctp_assoc_hashtable = (struct sctp_hashbucket *)
-					__get_free_pages(GFP_ATOMIC, order);
+			__get_free_pages(GFP_ATOMIC|__GFP_NOWARN, order);
 	} while (!sctp_assoc_hashtable && --order > 0);
 	if (!sctp_assoc_hashtable) {
-		printk(KERN_ERR "SCTP: Failed association hash alloc.\n");
+		pr_err("Failed association hash alloc\n");
 		status = -ENOMEM;
 		goto err_ahash_alloc;
 	}
@@ -1222,7 +1221,7 @@ SCTP_STATIC __init int sctp_init(void)
 	sctp_ep_hashtable = (struct sctp_hashbucket *)
 		kmalloc(64 * sizeof(struct sctp_hashbucket), GFP_KERNEL);
 	if (!sctp_ep_hashtable) {
-		printk(KERN_ERR "SCTP: Failed endpoint_hash alloc.\n");
+		pr_err("Failed endpoint_hash alloc\n");
 		status = -ENOMEM;
 		goto err_ehash_alloc;
 	}
@@ -1238,10 +1237,10 @@ SCTP_STATIC __init int sctp_init(void)
 		if ((sctp_port_hashsize > (64 * 1024)) && order > 0)
 			continue;
 		sctp_port_hashtable = (struct sctp_bind_hashbucket *)
-					__get_free_pages(GFP_ATOMIC, order);
+			__get_free_pages(GFP_ATOMIC|__GFP_NOWARN, order);
 	} while (!sctp_port_hashtable && --order > 0);
 	if (!sctp_port_hashtable) {
-		printk(KERN_ERR "SCTP: Failed bind hash alloc.");
+		pr_err("Failed bind hash alloc\n");
 		status = -ENOMEM;
 		goto err_bhash_alloc;
 	}
@@ -1250,8 +1249,7 @@ SCTP_STATIC __init int sctp_init(void)
 		INIT_HLIST_HEAD(&sctp_port_hashtable[i].chain);
 	}
 
-	printk(KERN_INFO "SCTP: Hash tables configured "
-			 "(established %d bind %d)\n",
+	pr_info("Hash tables configured (established %d bind %d)\n",
 		sctp_assoc_hashsize, sctp_port_hashsize);
 
 	/* Disable ADDIP by default. */
@@ -1292,8 +1290,7 @@ SCTP_STATIC __init int sctp_init(void)
 
 	/* Initialize the control inode/socket for handling OOTB packets.  */
 	if ((status = sctp_ctl_sock_init())) {
-		printk (KERN_ERR
-			"SCTP: Failed to initialize the SCTP control sock.\n");
+		pr_err("Failed to initialize the SCTP control sock\n");
 		goto err_ctl_sock_init;
 	}
 

@@ -3,7 +3,7 @@
  * drivers/input/touchscreen/cy8c_ts.c
  *
  * Copyright (C) 2009, 2010 Cypress Semiconductor, Inc.
- * Copyright (c) 2010, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2010, 2011 Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -56,6 +56,7 @@
 
 #define CY8CTMA300	0x0
 #define CY8CTMG200	0x1
+#define CY8CTMA340	0x2
 
 #define INVALID_DATA	0xff
 
@@ -98,6 +99,18 @@ static struct cy8c_ts_data devices[] = {
 		.status_reg = 0x5,
 		.update_data = 0x1,
 		.touch_bytes = 12,
+		.finger_size = 70,
+	},
+	[2] = {
+		.x_index = 1,
+		.y_index = 3,
+		.z_index = 5,
+		.id_index = 6,
+		.data_reg = 0x2,
+		.status_reg = 0,
+		.update_data = 0x4,
+		.touch_bytes = 6,
+		.touch_meta_data = 3,
 		.finger_size = 70,
 	},
 };
@@ -237,7 +250,7 @@ static void process_tmg200_data(struct cy8c_ts *ts)
 				ts->touch_data[ts->dd->y_index+1]);
 		id = ts->touch_data[ts->dd->id_index];
 
-		report_data(ts, x, y, 255, id);
+		report_data(ts, x, y, 255, id - 1);
 
 		if (touches == 2) {
 			x = join_bytes(ts->touch_data[ts->dd->x_index+5],
@@ -246,7 +259,7 @@ static void process_tmg200_data(struct cy8c_ts *ts)
 				ts->touch_data[ts->dd->y_index+6]);
 			id = ts->touch_data[ts->dd->id_index+5];
 
-			report_data(ts, x, y, 255, id);
+			report_data(ts, x, y, 255, id - 1);
 		}
 	} else {
 		for (i = 0; i < ts->prev_touches; i++) {
@@ -286,7 +299,7 @@ static void cy8c_ts_xy_worker(struct work_struct *work)
 	if (ts->touch_data[ts->dd->touch_index] == INVALID_DATA)
 		goto schedule;
 
-	if (ts->device_id == CY8CTMA300)
+	if ((ts->device_id == CY8CTMA300) || (ts->device_id == CY8CTMA340))
 		process_tma300_data(ts);
 	else
 		process_tmg200_data(ts);
@@ -318,100 +331,6 @@ static irqreturn_t cy8c_ts_irq(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static int cy8c_ts_open(struct input_dev *dev)
-{
-	int rc;
-	struct cy8c_ts *ts = input_get_drvdata(dev);
-
-	if (ts->pdata->resout_gpio < 0)
-		goto config_irq_gpio;
-
-	/* configure touchscreen reset out gpio */
-	rc = gpio_request(ts->pdata->resout_gpio, "cy8c_resout_gpio");
-	if (rc) {
-		pr_err("%s: unable to request gpio %d\n",
-			__func__, ts->pdata->resout_gpio);
-		return rc;
-	}
-
-	rc = gpio_direction_output(ts->pdata->resout_gpio, 0);
-	if (rc) {
-		pr_err("%s: unable to set direction for gpio %d\n",
-			__func__, ts->pdata->resout_gpio);
-		goto error_resout_gpio_dir;
-	}
-	/* reset gpio stabilization time */
-	msleep(20);
-
-config_irq_gpio:
-	/* configure touchscreen interrupt gpio */
-	rc = gpio_request(ts->pdata->irq_gpio, "cy8c_irq_gpio");
-	if (rc) {
-		pr_err("%s: unable to request gpio %d\n",
-			__func__, ts->pdata->irq_gpio);
-		goto error_irq_gpio_req;
-	}
-
-	rc = gpio_direction_input(ts->pdata->irq_gpio);
-	if (rc) {
-		pr_err("%s: unable to set direction for gpio %d\n",
-			__func__, ts->pdata->irq_gpio);
-		goto error_irq_gpio_dir;
-	}
-
-	ts->pen_irq = gpio_to_irq(ts->pdata->irq_gpio);
-	rc = request_irq(ts->pen_irq, cy8c_ts_irq,
-				IRQF_TRIGGER_FALLING,
-				ts->client->dev.driver->name, ts);
-	if (rc) {
-		dev_err(&ts->client->dev, "could not request irq\n");
-		goto error_req_irq_fail;
-	}
-
-	/* Clear the status register of the TS controller */
-	rc = cy8c_ts_write_reg_u8(ts->client, ts->dd->status_reg,
-						ts->dd->update_data);
-	if (rc < 0) {
-		/* Do multiple writes in case of failure */
-		dev_err(&ts->client->dev, "%s: write failed %d"
-				"trying again\n", __func__, rc);
-		rc = cy8c_ts_write_reg_u8(ts->client,
-			ts->dd->status_reg, ts->dd->update_data);
-		if (rc < 0) {
-			dev_err(&ts->client->dev, "%s: write failed"
-				"second time(%d)\n", __func__, rc);
-		}
-	}
-
-	return 0;
-
-error_req_irq_fail:
-error_irq_gpio_dir:
-	gpio_free(ts->pdata->irq_gpio);
-error_irq_gpio_req:
-error_resout_gpio_dir:
-	if (ts->pdata->resout_gpio >= 0)
-		gpio_free(ts->pdata->resout_gpio);
-	return rc;
-}
-
-static void cy8c_ts_close(struct input_dev *dev)
-{
-	int rc;
-	struct cy8c_ts *ts = input_get_drvdata(dev);
-
-	rc = cancel_delayed_work_sync(&ts->work);
-
-	if (rc)
-		enable_irq(ts->pen_irq);
-
-	free_irq(ts->pen_irq, ts);
-
-	gpio_free(ts->pdata->irq_gpio);
-	if (ts->pdata->resout_gpio >= 0)
-		gpio_free(ts->pdata->resout_gpio);
-}
-
 static int cy8c_ts_init_ts(struct i2c_client *client, struct cy8c_ts *ts)
 {
 	struct input_dev *input_device;
@@ -440,6 +359,14 @@ static int cy8c_ts_init_ts(struct i2c_client *client, struct cy8c_ts *ts)
 		}
 		ts->dd->data_size = ts->dd->touch_bytes;
 		ts->dd->touch_index = 0x0;
+	} else if (ts->device_id == CY8CTMA340) {
+		if (ts->pdata->nfingers > 10) {
+			dev_err(&client->dev, "Touches >=1 & <= 10\n");
+			return -EINVAL;
+		}
+		ts->dd->data_size = ts->pdata->nfingers * ts->dd->touch_bytes +
+						ts->dd->touch_meta_data;
+		ts->dd->touch_index = 0x0;
 	}
 
 	ts->touch_data = kzalloc(ts->dd->data_size, GFP_KERNEL);
@@ -464,6 +391,13 @@ static int cy8c_ts_init_ts(struct i2c_client *client, struct cy8c_ts *ts)
 
 	__set_bit(EV_ABS, input_device->evbit);
 
+	if (ts->device_id == CY8CTMA340) {
+		/* set up virtual key */
+		__set_bit(EV_KEY, input_device->evbit);
+		/* set dummy key to make driver work with virtual keys */
+		input_set_capability(input_device, EV_KEY, KEY_PROG1);
+	}
+
 	input_set_abs_params(input_device, ABS_MT_POSITION_X,
 			ts->pdata->dis_min_x, ts->pdata->dis_max_x, 0, 0);
 	input_set_abs_params(input_device, ABS_MT_POSITION_Y,
@@ -474,9 +408,6 @@ static int cy8c_ts_init_ts(struct i2c_client *client, struct cy8c_ts *ts)
 			ts->pdata->min_width, ts->pdata->max_width, 0, 0);
 	input_set_abs_params(input_device, ABS_MT_TRACKING_ID,
 			ts->pdata->min_tid, ts->pdata->max_tid, 0, 0);
-
-	input_device->open = cy8c_ts_open;
-	input_device->close = cy8c_ts_close;
 
 	ts->wq = create_singlethread_workqueue("kworkqueue_ts");
 	if (!ts->wq) {
@@ -519,8 +450,25 @@ static int cy8c_ts_suspend(struct device *dev)
 
 		rc = cancel_delayed_work_sync(&ts->work);
 
-		if (rc)
+		if (rc) {
+			/* missed the worker, write to STATUS_REG to
+			   acknowledge interrupt */
+			rc = cy8c_ts_write_reg_u8(ts->client,
+				ts->dd->status_reg, ts->dd->update_data);
+			if (rc < 0) {
+				dev_err(&ts->client->dev,
+					"write failed, try once more\n");
+
+				rc = cy8c_ts_write_reg_u8(ts->client,
+					ts->dd->status_reg,
+					ts->dd->update_data);
+				if (rc < 0)
+					dev_err(&ts->client->dev,
+						"write failed, exiting\n");
+			}
+
 			enable_irq(ts->pen_irq);
+		}
 
 		gpio_free(ts->pdata->irq_gpio);
 
@@ -579,6 +527,21 @@ static int cy8c_ts_resume(struct device *dev)
 		}
 
 		enable_irq(ts->pen_irq);
+
+		/* Clear the status register of the TS controller */
+		rc = cy8c_ts_write_reg_u8(ts->client,
+			ts->dd->status_reg, ts->dd->update_data);
+		if (rc < 0) {
+			dev_err(&ts->client->dev,
+				"write failed, try once more\n");
+
+			rc = cy8c_ts_write_reg_u8(ts->client,
+				ts->dd->status_reg,
+				ts->dd->update_data);
+			if (rc < 0)
+				dev_err(&ts->client->dev,
+					"write failed, exiting\n");
+		}
 	}
 	return 0;
 err_gpio_free:
@@ -666,6 +629,8 @@ static int __devinit cy8c_ts_probe(struct i2c_client *client,
 	/* read one byte to make sure i2c device exists */
 	if (id->driver_data == CY8CTMA300)
 		temp_reg = 0x01;
+	else if (id->driver_data == CY8CTMA340)
+		temp_reg = 0x00;
 	else
 		temp_reg = 0x05;
 
@@ -685,6 +650,66 @@ static int __devinit cy8c_ts_probe(struct i2c_client *client,
 		goto error_mutex_destroy;
 	}
 
+	if (ts->pdata->resout_gpio < 0)
+		goto config_irq_gpio;
+
+	/* configure touchscreen reset out gpio */
+	rc = gpio_request(ts->pdata->resout_gpio, "cy8c_resout_gpio");
+	if (rc) {
+		pr_err("%s: unable to request gpio %d\n",
+			__func__, ts->pdata->resout_gpio);
+		goto error_uninit_ts;
+	}
+
+	rc = gpio_direction_output(ts->pdata->resout_gpio, 0);
+	if (rc) {
+		pr_err("%s: unable to set direction for gpio %d\n",
+			__func__, ts->pdata->resout_gpio);
+		goto error_resout_gpio_dir;
+	}
+	/* reset gpio stabilization time */
+	msleep(20);
+
+config_irq_gpio:
+	/* configure touchscreen interrupt gpio */
+	rc = gpio_request(ts->pdata->irq_gpio, "cy8c_irq_gpio");
+	if (rc) {
+		pr_err("%s: unable to request gpio %d\n",
+			__func__, ts->pdata->irq_gpio);
+		goto error_irq_gpio_req;
+	}
+
+	rc = gpio_direction_input(ts->pdata->irq_gpio);
+	if (rc) {
+		pr_err("%s: unable to set direction for gpio %d\n",
+			__func__, ts->pdata->irq_gpio);
+		goto error_irq_gpio_dir;
+	}
+
+	ts->pen_irq = gpio_to_irq(ts->pdata->irq_gpio);
+	rc = request_irq(ts->pen_irq, cy8c_ts_irq,
+				IRQF_TRIGGER_FALLING,
+				ts->client->dev.driver->name, ts);
+	if (rc) {
+		dev_err(&ts->client->dev, "could not request irq\n");
+		goto error_req_irq_fail;
+	}
+
+	/* Clear the status register of the TS controller */
+	rc = cy8c_ts_write_reg_u8(ts->client, ts->dd->status_reg,
+						ts->dd->update_data);
+	if (rc < 0) {
+		/* Do multiple writes in case of failure */
+		dev_err(&ts->client->dev, "%s: write failed %d"
+				"trying again\n", __func__, rc);
+		rc = cy8c_ts_write_reg_u8(ts->client,
+			ts->dd->status_reg, ts->dd->update_data);
+		if (rc < 0) {
+			dev_err(&ts->client->dev, "%s: write failed"
+				"second time(%d)\n", __func__, rc);
+		}
+	}
+
 	device_init_wakeup(&client->dev, ts->pdata->wakeup);
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
@@ -694,8 +719,19 @@ static int __devinit cy8c_ts_probe(struct i2c_client *client,
 	ts->early_suspend.resume = cy8c_ts_late_resume;
 	register_early_suspend(&ts->early_suspend);
 #endif
-	return 0;
 
+	return 0;
+error_req_irq_fail:
+error_irq_gpio_dir:
+	gpio_free(ts->pdata->irq_gpio);
+error_irq_gpio_req:
+error_resout_gpio_dir:
+	if (ts->pdata->resout_gpio >= 0)
+		gpio_free(ts->pdata->resout_gpio);
+error_uninit_ts:
+	destroy_workqueue(ts->wq);
+	input_unregister_device(ts->input);
+	kfree(ts->touch_data);
 error_mutex_destroy:
 	mutex_destroy(&ts->sus_lock);
 error_power_on:
@@ -723,6 +759,15 @@ static int __devexit cy8c_ts_remove(struct i2c_client *client)
 
 	device_init_wakeup(&client->dev, 0);
 
+	cancel_delayed_work_sync(&ts->work);
+
+	free_irq(ts->pen_irq, ts);
+
+	gpio_free(ts->pdata->irq_gpio);
+
+	if (ts->pdata->resout_gpio >= 0)
+		gpio_free(ts->pdata->resout_gpio);
+
 	destroy_workqueue(ts->wq);
 
 	input_unregister_device(ts->input);
@@ -744,6 +789,7 @@ static int __devexit cy8c_ts_remove(struct i2c_client *client)
 static const struct i2c_device_id cy8c_ts_id[] = {
 	{"cy8ctma300", CY8CTMA300},
 	{"cy8ctmg200", CY8CTMG200},
+	{"cy8ctma340", CY8CTMA340},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, cy8c_ts_id);
@@ -778,6 +824,6 @@ static void __exit cy8c_ts_exit(void)
 module_exit(cy8c_ts_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("CY8CTMA300-CY8CTMG200 touchscreen controller driver");
+MODULE_DESCRIPTION("CY8CTMA340-CY8CTMG200 touchscreen controller driver");
 MODULE_AUTHOR("Cypress");
 MODULE_ALIAS("platform:cy8c_ts");

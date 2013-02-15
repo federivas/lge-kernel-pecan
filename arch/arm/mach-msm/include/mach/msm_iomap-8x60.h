@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2007 Google, Inc.
- * Copyright (c) 2008-2010, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2008-2011, Code Aurora Forum. All rights reserved.
  * Author: Brian Swetland <swetland@google.com>
  *
  * This software is licensed under the terms of the GNU General Public
@@ -126,41 +126,13 @@
 #define MSM_TCSR_PHYS	0x16B00000
 #define MSM_TCSR_SIZE	SZ_4K
 
-#define MSM_IOMMU_JPEGD_PHYS 0x07300000
-#define MSM_IOMMU_JPEGD_SIZE SZ_1M
+#define MSM_IMEM_BASE		IOMEM(0xFA702000)
+#define MSM_IMEM_PHYS		0x2A05F000
+#define MSM_IMEM_SIZE		SZ_4K
 
-#define MSM_IOMMU_VPE_PHYS 0x07400000
-#define MSM_IOMMU_VPE_SIZE SZ_1M
-
-#define MSM_IOMMU_MDP0_PHYS 0x07500000
-#define MSM_IOMMU_MDP0_SIZE SZ_1M
-
-#define MSM_IOMMU_MDP1_PHYS 0x07600000
-#define MSM_IOMMU_MDP1_SIZE SZ_1M
-
-#define MSM_IOMMU_ROT_PHYS 0x07700000
-#define MSM_IOMMU_ROT_SIZE SZ_1M
-
-#define MSM_IOMMU_IJPEG_PHYS 0x07800000
-#define MSM_IOMMU_IJPEG_SIZE SZ_1M
-
-#define MSM_IOMMU_VFE_PHYS 0x07900000
-#define MSM_IOMMU_VFE_SIZE SZ_1M
-
-#define MSM_IOMMU_VCODEC_A_PHYS 0x07A00000
-#define MSM_IOMMU_VCODEC_A_SIZE SZ_1M
-
-#define MSM_IOMMU_VCODEC_B_PHYS 0x07B00000
-#define MSM_IOMMU_VCODEC_B_SIZE SZ_1M
-
-#define MSM_IOMMU_GFX3D_PHYS 0x07C00000
-#define MSM_IOMMU_GFX3D_SIZE SZ_1M
-
-#define MSM_IOMMU_GFX2D0_PHYS 0x07D00000
-#define MSM_IOMMU_GFX2D0_SIZE SZ_1M
-
-#define MSM_IOMMU_GFX2D1_PHYS 0x07E00000
-#define MSM_IOMMU_GFX2D1_SIZE SZ_1M
+#define MSM_HDMI_BASE		IOMEM(0xFA800000)
+#define MSM_HDMI_PHYS		0x04A00000
+#define MSM_HDMI_SIZE		SZ_4K
 
 #ifdef CONFIG_MSM_DEBUG_UART
 

@@ -23,7 +23,8 @@
 #include <asm/system.h>
 #include <asm/pgtable.h>
 #include <asm/tlbflush.h>
-#ifdef CONFIG_ARCH_MSM_SCORPION
+#include <asm/cputype.h>
+#if defined(CONFIG_ARCH_MSM_SCORPION) && !defined(CONFIG_MSM_SMP)
 #include <asm/io.h>
 #include <mach/msm_iomap.h>
 #endif
@@ -116,7 +117,7 @@ void show_pte(struct mm_struct *mm, unsigned long addr)
 
 		pte = pte_offset_map(pmd, addr);
 		printk(", *pte=%08lx", pte_val(*pte));
-		printk(", *ppte=%08lx", pte_val(pte[-PTRS_PER_PTE]));
+		printk(", *ppte=%08lx", pte_val(pte[PTE_HWTABLE_PTRS]));
 		pte_unmap(pte);
 	} while(0);
 
@@ -134,10 +135,6 @@ static void
 __do_kernel_fault(struct mm_struct *mm, unsigned long addr, unsigned int fsr,
 		  struct pt_regs *regs)
 {
-#ifdef CONFIG_MACH_LGE
-	char panic_msg[80];
-#endif
-
 	/*
 	 * Are we prepared to handle this kernel fault?
 	 */
@@ -148,26 +145,13 @@ __do_kernel_fault(struct mm_struct *mm, unsigned long addr, unsigned int fsr,
 	 * No handler, we'll have to terminate things with extreme prejudice.
 	 */
 	bust_spinlocks(1);
-
-#ifdef CONFIG_MACH_LGE
-	memset(panic_msg, 0, 80);
-	sprintf(panic_msg, 
-			"%s at virtual address %08lx",
-			(addr < PAGE_SIZE) ? "NULL dereference" :
-			"paging request", addr);
-#else
 	printk(KERN_ALERT
 		"Unable to handle kernel %s at virtual address %08lx\n",
 		(addr < PAGE_SIZE) ? "NULL pointer dereference" :
 		"paging request", addr);
-#endif
 
 	show_pte(mm, addr);
-#ifdef CONFIG_MACH_LGE
-	die(panic_msg, regs, fsr);
-#else
 	die("Oops", regs, fsr);
-#endif	
 	bust_spinlocks(0);
 	do_exit(SIGKILL);
 }
@@ -438,7 +422,16 @@ do_translation_fault(unsigned long addr, unsigned int fsr,
 	pmd_k = pmd_offset(pgd_k, addr);
 	pmd   = pmd_offset(pgd, addr);
 
-	if (pmd_none(*pmd_k))
+	/*
+	 * On ARM one Linux PGD entry contains two hardware entries (see page
+	 * tables layout in pgtable.h). We normally guarantee that we always
+	 * fill both L1 entries. But create_mapping() doesn't follow the rule.
+	 * It can create inidividual L1 entries, so here we have to call
+	 * pmd_none() check for the entry really corresponded to address, not
+	 * for the first of pair.
+	 */
+	index = (addr >> SECTION_SHIFT) & 1;
+	if (pmd_none(pmd_k[index]))
 		goto bad_area;
 
 	copy_pmd(pmd, pmd_k);
@@ -477,7 +470,7 @@ do_bad(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 	return 1;
 }
 
-#ifdef CONFIG_ARCH_MSM_SCORPION
+#if defined(CONFIG_ARCH_MSM_SCORPION) && !defined(CONFIG_MSM_SMP)
 #define __str(x) #x
 #define MRC(x, v1, v2, v4, v5, v6) do {					\
 	unsigned int __##x;						\
@@ -494,7 +487,7 @@ do_bad(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 static int
 do_imprecise_ext(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 {
-#ifdef CONFIG_ARCH_MSM_SCORPION
+#if defined(CONFIG_ARCH_MSM_SCORPION) && !defined(CONFIG_MSM_SMP)
 	MRC(ADFSR,    p15, 0,  c5, c1, 0);
 	MRC(DFSR,     p15, 0,  c5, c0, 0);
 	MRC(ACTLR,    p15, 0,  c1, c0, 1);
@@ -514,7 +507,7 @@ do_imprecise_ext(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 		      "mcr p15, 0, %0, c5, c1, 0"
 		      : : "r" (0));
 #endif
-#ifdef CONFIG_ARCH_MSM_SCORPION
+#if defined(CONFIG_ARCH_MSM_SCORPION) && !defined(CONFIG_MSM_SMP)
 	pr_info("%s: TCSR_SPARE2 = 0x%.8x\n", __func__, readl(MSM_TCSR_SPARE2));
 #endif
 	return 1;
@@ -531,15 +524,10 @@ static struct fsr_info {
 	 * defines these to be "precise" aborts.
 	 */
 	{ do_bad,		SIGSEGV, 0,		"vector exception"		   },
-	{ do_bad,		SIGILL,	 BUS_ADRALN,	"alignment exception"		   },
+	{ do_bad,		SIGBUS,	 BUS_ADRALN,	"alignment exception"		   },
 	{ do_bad,		SIGKILL, 0,		"terminal exception"		   },
-	{ do_bad,		SIGILL,	 BUS_ADRALN,	"alignment exception"		   },
-/* Do we need runtime check ? */
-#if __LINUX_ARM_ARCH__ < 6
+	{ do_bad,		SIGBUS,	 BUS_ADRALN,	"alignment exception"		   },
 	{ do_bad,		SIGBUS,	 0,		"external abort on linefetch"	   },
-#else
-	{ do_translation_fault,	SIGSEGV, SEGV_MAPERR,	"I-cache maintenance fault"	   },
-#endif
 	{ do_translation_fault,	SIGSEGV, SEGV_MAPERR,	"section translation fault"	   },
 	{ do_bad,		SIGBUS,	 0,		"external abort on linefetch"	   },
 	{ do_page_fault,	SIGSEGV, SEGV_MAPERR,	"page translation fault"	   },
@@ -576,14 +564,85 @@ static struct fsr_info {
 
 void __init
 hook_fault_code(int nr, int (*fn)(unsigned long, unsigned int, struct pt_regs *),
-		int sig, const char *name)
+		int sig, int code, const char *name)
 {
-	if (nr >= 0 && nr < ARRAY_SIZE(fsr_info)) {
-		fsr_info[nr].fn   = fn;
-		fsr_info[nr].sig  = sig;
-		fsr_info[nr].name = name;
-	}
+	if (nr < 0 || nr >= ARRAY_SIZE(fsr_info))
+		BUG();
+
+	fsr_info[nr].fn   = fn;
+	fsr_info[nr].sig  = sig;
+	fsr_info[nr].code = code;
+	fsr_info[nr].name = name;
 }
+
+#ifdef CONFIG_MSM_KRAIT_TBB_ABORT_HANDLER
+static int krait_tbb_fixup(unsigned int fsr, struct pt_regs *regs)
+{
+	int base_cond, cond = 0;
+	unsigned int p1, cpsr_z, cpsr_c, cpsr_n, cpsr_v;
+
+	if ((read_cpuid_id() & 0xFFFFFFFC) != 0x510F04D0)
+		return 0;
+
+	if (!thumb_mode(regs))
+		return 0;
+
+	/* If ITSTATE is 0, return quickly */
+	if ((regs->ARM_cpsr & PSR_IT_MASK) == 0)
+		return 0;
+
+	cpsr_n = (regs->ARM_cpsr & PSR_N_BIT) ? 1 : 0;
+	cpsr_z = (regs->ARM_cpsr & PSR_Z_BIT) ? 1 : 0;
+	cpsr_c = (regs->ARM_cpsr & PSR_C_BIT) ? 1 : 0;
+	cpsr_v = (regs->ARM_cpsr & PSR_V_BIT) ? 1 : 0;
+
+	p1 = (regs->ARM_cpsr & BIT(12)) ? 1 : 0;
+
+	base_cond = (regs->ARM_cpsr >> 13) & 0x07;
+
+	switch (base_cond) {
+	case 0x0:	/* equal */
+		cond = cpsr_z;
+		break;
+
+	case 0x1:	/* carry set */
+		cond = cpsr_c;
+		break;
+
+	case 0x2:	/* minus / negative */
+		cond = cpsr_n;
+		break;
+
+	case 0x3:	/* overflow */
+		cond = cpsr_v;
+		break;
+
+	case 0x4:	/* unsigned higher */
+		cond = (cpsr_c == 1) && (cpsr_z == 0);
+		break;
+
+	case 0x5:	/* signed greater / equal */
+		cond = (cpsr_n == cpsr_v);
+		break;
+
+	case 0x6:	/* signed greater */
+		cond = (cpsr_z == 0) && (cpsr_n == cpsr_v);
+		break;
+
+	case 0x7:	/* always */
+		cond = 1;
+		break;
+	};
+
+	if (cond == p1) {
+		pr_debug("Conditional abort fixup, PC=%08x, base=%d, cond=%d\n",
+			 (unsigned int) regs->ARM_pc, base_cond, cond);
+		regs->ARM_pc += 2;
+		return 1;
+	}
+	return 0;
+}
+#endif
 
 /*
  * Dispatch a data abort to the relevant handler.
@@ -596,6 +655,11 @@ do_DataAbort(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 
 #ifdef CONFIG_EMULATE_DOMAIN_MANAGER_V7
 	if (emulate_domain_manager_data_abort(fsr, addr))
+		return;
+#endif
+
+#ifdef CONFIG_MSM_KRAIT_TBB_ABORT_HANDLER
+	if (krait_tbb_fixup(fsr, regs))
 		return;
 #endif
 
@@ -648,6 +712,19 @@ static struct fsr_info ifsr_info[] = {
 	{ do_bad,		SIGBUS,  0,		"unknown 31"			   },
 };
 
+void __init
+hook_ifault_code(int nr, int (*fn)(unsigned long, unsigned int, struct pt_regs *),
+		 int sig, int code, const char *name)
+{
+	if (nr < 0 || nr >= ARRAY_SIZE(ifsr_info))
+		BUG();
+
+	ifsr_info[nr].fn   = fn;
+	ifsr_info[nr].sig  = sig;
+	ifsr_info[nr].code = code;
+	ifsr_info[nr].name = name;
+}
+
 asmlinkage void __exception
 do_PrefetchAbort(unsigned long addr, unsigned int ifsr, struct pt_regs *regs)
 {
@@ -672,3 +749,25 @@ do_PrefetchAbort(unsigned long addr, unsigned int ifsr, struct pt_regs *regs)
 	arm_notify_die("", regs, &info, ifsr, 0);
 }
 
+static int __init exceptions_init(void)
+{
+	if (cpu_architecture() >= CPU_ARCH_ARMv6) {
+		hook_fault_code(4, do_translation_fault, SIGSEGV, SEGV_MAPERR,
+				"I-cache maintenance fault");
+	}
+
+	if (cpu_architecture() >= CPU_ARCH_ARMv7) {
+		/*
+		 * TODO: Access flag faults introduced in ARMv6K.
+		 * Runtime check for 'K' extension is needed
+		 */
+		hook_fault_code(3, do_bad, SIGSEGV, SEGV_MAPERR,
+				"section access flag fault");
+		hook_fault_code(6, do_bad, SIGSEGV, SEGV_MAPERR,
+				"section access flag fault");
+	}
+
+	return 0;
+}
+
+arch_initcall(exceptions_init);

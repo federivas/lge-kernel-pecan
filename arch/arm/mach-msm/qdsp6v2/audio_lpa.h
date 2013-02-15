@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -29,6 +29,7 @@
 #define AUDIO_LPA_H
 
 #include <linux/earlysuspend.h>
+#include <linux/wakelock.h>
 
 #define ADRV_STATUS_OBUF_GIVEN 0x00000001
 #define ADRV_STATUS_IBUF_GIVEN 0x00000002
@@ -71,8 +72,6 @@ struct audio {
 	uint32_t out_channel_mode;
 	uint32_t out_bits; /* bits per sample (used by PCM decoder) */
 
-	/* data allocated for various buffers */
-	char *data;
 	int32_t phys; /* physical address of write buffer */
 
 	uint32_t drv_status;
@@ -89,6 +88,7 @@ struct audio {
 	struct audlpa_suspend_ctl suspend_ctl;
 #endif
 
+	struct wake_lock wakelock;
 #ifdef CONFIG_DEBUG_FS
 	struct dentry *dentry;
 #endif

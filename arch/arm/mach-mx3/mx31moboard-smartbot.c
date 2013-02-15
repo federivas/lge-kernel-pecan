@@ -10,10 +10,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include <linux/delay.h>
@@ -23,21 +19,19 @@
 #include <linux/i2c.h>
 #include <linux/platform_device.h>
 #include <linux/types.h>
-#include <linux/fsl_devices.h>
 
 #include <linux/usb/otg.h>
 #include <linux/usb/ulpi.h>
 
 #include <mach/common.h>
 #include <mach/hardware.h>
-#include <mach/imx-uart.h>
 #include <mach/iomux-mx3.h>
 #include <mach/board-mx31moboard.h>
-#include <mach/mxc_ehci.h>
 #include <mach/ulpi.h>
 
 #include <media/soc_camera.h>
 
+#include "devices-imx31.h"
 #include "devices.h"
 
 static unsigned int smartbot_pins[] = {
@@ -59,7 +53,7 @@ static unsigned int smartbot_pins[] = {
 	MX31_PIN_RI_DCE1__GPIO2_10, MX31_PIN_DCD_DCE1__GPIO2_11,
 };
 
-static struct imxuart_platform_data uart_pdata = {
+static const struct imxuart_platform_data uart_pdata __initconst = {
 	.flags = IMXUART_HAVE_RTSCTS,
 };
 
@@ -92,7 +86,6 @@ static struct soc_camera_link base_iclink = {
 	.reset		= smartbot_cam_reset,
 	.board_info	= &smartbot_i2c_devices[0],
 	.i2c_adapter_id	= 0,
-	.module_name	= "mt9t031",
 };
 
 static struct platform_device smartbot_camera[] = {
@@ -123,24 +116,30 @@ static int __init smartbot_cam_init(void)
 	return 0;
 }
 
-static struct fsl_usb2_platform_data usb_pdata = {
+static const struct fsl_usb2_platform_data usb_pdata __initconst = {
 	.operating_mode	= FSL_USB2_DR_DEVICE,
 	.phy_mode	= FSL_USB2_PHY_ULPI,
 };
 
 #if defined(CONFIG_USB_ULPI)
 
-static struct mxc_usbh_platform_data otg_host_pdata = {
+static struct mxc_usbh_platform_data otg_host_pdata __initdata = {
 	.portsc = MXC_EHCI_MODE_ULPI | MXC_EHCI_UTMI_8BIT,
 	.flags	= MXC_EHCI_POWER_PINS_ENABLED,
 };
 
 static int __init smartbot_otg_host_init(void)
 {
-	otg_host_pdata.otg = otg_ulpi_create(&mxc_ulpi_access_ops,
-			USB_OTG_DRV_VBUS | USB_OTG_DRV_VBUS_EXT);
+	struct platform_device *pdev;
 
-	return mxc_register_device(&mxc_otg_host, &otg_host_pdata);
+	otg_host_pdata.otg = otg_ulpi_create(&mxc_ulpi_access_ops,
+			ULPI_OTG_DRVVBUS | ULPI_OTG_DRVVBUS_EXT);
+
+	pdev = imx31_add_mxc_ehci_otg(&otg_host_pdata);
+	if (IS_ERR(pdev))
+		return PTR_ERR(pdev);
+
+	return 0;
 }
 #else
 static inline int smartbot_otg_host_init(void) { return 0; }
@@ -183,12 +182,11 @@ void __init mx31moboard_smartbot_init(int board)
 	mxc_iomux_setup_multiple_pins(smartbot_pins, ARRAY_SIZE(smartbot_pins),
 		"smartbot");
 
-	mxc_register_device(&mxc_uart_device1, &uart_pdata);
-
+	imx31_add_imx_uart1(&uart_pdata);
 
 	switch (board) {
 	case MX31SMARTBOT:
-		mxc_register_device(&mxc_otg_udc_device, &usb_pdata);
+		imx31_add_fsl_usb2_udc(&usb_pdata);
 		break;
 	case MX31EYEBOT:
 		smartbot_otg_host_init();

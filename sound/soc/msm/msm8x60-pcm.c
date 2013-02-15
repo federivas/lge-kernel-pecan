@@ -1,21 +1,14 @@
-/* Copyright (c) 2010, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
- * All source code in this file is licensed under the following license except
- * where indicated.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 and
+ * only version 2 as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- *
- * See the GNU General Public License for more details.
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, you can find it at http://www.fsf.org.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
-
 
 #include <linux/init.h>
 #include <linux/err.h>
@@ -246,6 +239,7 @@ static int msm_pcm_playback_prepare(struct snd_pcm_substream *substream)
 	struct msm_audio *prtd = runtime->private_data;
 	int ret;
 	int dev_rate = 48000;
+	int i = 0;
 
 	pr_debug("%s\n", __func__);
 	prtd->pcm_size = snd_pcm_lib_buffer_bytes(substream);
@@ -264,17 +258,17 @@ static int msm_pcm_playback_prepare(struct snd_pcm_substream *substream)
 
 	atomic_set(&prtd->out_count, runtime->periods);
 	atomic_set(&prtd->in_count, 0);
-	pr_debug("prtd->session_id = %d, copp_id= %d",
-			prtd->session_id,
-			session_route.playback_session[substream->number]);
-	if (session_route.playback_session[substream->number]
-			!= DEVICE_IGNORE) {
-		if (session_route.playback_session[substream->number]
-				== PCM_RX)
-			dev_rate = 8000;
-		msm_snddev_set_dec(prtd->session_id,
-			session_route.playback_session[substream->number],
-			1, dev_rate, runtime->channels);
+	for (i = 0; i < MAX_COPP; i++) {
+		pr_debug("prtd->session_id = %d, copp_id= %d",
+			prtd->session_id, i);
+		if (session_route.playback_session[substream->number][i]
+				!= DEVICE_IGNORE) {
+			pr_err("Device active\n");
+			if (i == PCM_RX)
+				dev_rate = 8000;
+			msm_snddev_set_dec(prtd->session_id,
+				       i, 1, dev_rate, runtime->channels);
+		}
 	}
 	prtd->enabled = 1;
 	prtd->cmd_ack = 0;
@@ -310,17 +304,16 @@ static int msm_pcm_capture_prepare(struct snd_pcm_substream *substream)
 	for (i = 0; i < runtime->periods; i++)
 		q6asm_read_nolock(prtd->audio_client);
 	prtd->periods = runtime->periods;
-	pr_debug("prtd->session_id = %d, copp_id= %d",
+	for (i = 0; i < MAX_COPP; i++) {
+		pr_debug("prtd->session_id = %d, copp_id= %d",
 			prtd->session_id,
-			session_route.capture_session[substream->number]);
-	if (session_route.capture_session[substream->number]
-			!= DEVICE_IGNORE) {
-		if (session_route.capture_session[substream->number]
-				== PCM_TX)
-			dev_rate = 8000;
-		msm_snddev_set_enc(prtd->session_id,
-			session_route.capture_session[substream->number],
-			1, dev_rate, 1);
+			session_route.capture_session[prtd->session_id][i]);
+		if (session_route.capture_session[prtd->session_id][i]
+				!= DEVICE_IGNORE) {
+			if (i == PCM_RX)
+				dev_rate = 8000;
+			msm_snddev_set_enc(prtd->session_id, i, 1, dev_rate, 1);
+		}
 	}
 	prtd->enabled = 1;
 
@@ -530,6 +523,7 @@ static int msm_pcm_playback_close(struct snd_pcm_substream *substream)
 				prtd->cmd_ack, 5 * HZ);
 	if (ret < 0)
 		pr_err("%s: CMD_EOS failed\n", __func__);
+	q6asm_cmd(prtd->audio_client, CMD_CLOSE);
 	q6asm_audio_client_buf_free_contiguous(dir,
 				prtd->audio_client);
 
@@ -537,7 +531,6 @@ static int msm_pcm_playback_close(struct snd_pcm_substream *substream)
 	auddev_unregister_evt_listner(AUDDEV_CLNT_DEC,
 		substream->number);
 	pr_debug("%s\n", __func__);
-	q6asm_cmd(prtd->audio_client, CMD_CLOSE);
 	msm_clear_session_id(prtd->session_id);
 	q6asm_audio_client_free(prtd->audio_client);
 	kfree(prtd);
@@ -626,11 +619,11 @@ static int msm_pcm_capture_close(struct snd_pcm_substream *substream)
 	int dir = OUT;
 
 	pr_debug("%s\n", __func__);
+	q6asm_cmd(prtd->audio_client, CMD_CLOSE);
 	q6asm_audio_client_buf_free_contiguous(dir,
 				prtd->audio_client);
 	auddev_unregister_evt_listner(AUDDEV_CLNT_ENC,
 		substream->number);
-	q6asm_cmd(prtd->audio_client, CMD_CLOSE);
 	msm_clear_session_id(prtd->session_id);
 	q6asm_audio_client_free(prtd->audio_client);
 	kfree(prtd);
@@ -749,23 +742,11 @@ static struct snd_pcm_ops msm_pcm_ops = {
 	.mmap		= msm_pcm_mmap,
 };
 
-
-
-static int msm_pcm_remove(struct platform_device *devptr)
-{
-	struct snd_soc_device *socdev = platform_get_drvdata(devptr);
-	snd_soc_free_pcms(socdev);
-	kfree(socdev->card->codec);
-	platform_set_drvdata(devptr, NULL);
-	return 0;
-}
-
-static int msm_pcm_new(struct snd_card *card,
-			struct snd_soc_dai *codec_dai,
-			struct snd_pcm *pcm)
+static int msm_pcm_new(struct snd_soc_pcm_runtime *rtd)
 {
 	int ret = 0;
-
+	struct snd_card *card = rtd->card->snd_card;
+	struct snd_pcm *pcm = rtd->pcm;
 
 	ret = snd_pcm_new_stream(pcm, SNDRV_PCM_STREAM_PLAYBACK, 2);
 	if (ret)
@@ -781,23 +762,43 @@ static int msm_pcm_new(struct snd_card *card,
 	return ret;
 }
 
-struct snd_soc_platform msm_soc_platform = {
-	.name		= "msm-audio",
-	.remove         = msm_pcm_remove,
-	.pcm_ops	= &msm_pcm_ops,
+struct snd_soc_platform_driver msm_soc_platform = {
+	.ops            = &msm_pcm_ops,
 	.pcm_new	= msm_pcm_new,
 };
 EXPORT_SYMBOL(msm_soc_platform);
 
+static __devinit int msm_pcm_probe(struct platform_device *pdev)
+{
+	dev_info(&pdev->dev, "%s: dev name %s\n", __func__, dev_name(&pdev->dev));
+	return snd_soc_register_platform(&pdev->dev,
+				&msm_soc_platform);
+}
+
+static int msm_pcm_remove(struct platform_device *pdev)
+{
+	snd_soc_unregister_platform(&pdev->dev);
+	return 0;
+}
+
+static struct platform_driver msm_pcm_driver = {
+	.probe = msm_pcm_probe,
+	.remove = __devexit_p(msm_pcm_remove),
+	.driver = {
+		.name = "msm-dsp-audio",
+		.owner = THIS_MODULE,
+	},
+};
+
 static int __init msm_soc_platform_init(void)
 {
-	return snd_soc_register_platform(&msm_soc_platform);
+	return platform_driver_register(&msm_pcm_driver);
 }
 module_init(msm_soc_platform_init);
 
 static void __exit msm_soc_platform_exit(void)
 {
-	snd_soc_unregister_platform(&msm_soc_platform);
+	 platform_driver_unregister(&msm_pcm_driver);
 }
 module_exit(msm_soc_platform_exit);
 

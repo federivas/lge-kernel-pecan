@@ -10,10 +10,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include <linux/delay.h>
@@ -42,16 +38,13 @@
 #include <mach/board-mx31moboard.h>
 #include <mach/common.h>
 #include <mach/hardware.h>
-#include <mach/imx-uart.h>
 #include <mach/iomux-mx3.h>
 #include <mach/ipu.h>
-#include <mach/i2c.h>
-#include <mach/mmc.h>
-#include <mach/mxc_ehci.h>
 #include <mach/mx3_camera.h>
 #include <mach/spi.h>
 #include <mach/ulpi.h>
 
+#include "devices-imx31.h"
 #include "devices.h"
 
 static unsigned int moboard_pins[] = {
@@ -130,24 +123,36 @@ static struct platform_device mx31moboard_flash = {
 
 static int moboard_uart0_init(struct platform_device *pdev)
 {
-	gpio_request(IOMUX_TO_GPIO(MX31_PIN_CTS1), "uart0-cts-hack");
-	gpio_direction_output(IOMUX_TO_GPIO(MX31_PIN_CTS1), 0);
-	return 0;
+	int ret = gpio_request(IOMUX_TO_GPIO(MX31_PIN_CTS1), "uart0-cts-hack");
+	if (ret)
+		return ret;
+
+	ret = gpio_direction_output(IOMUX_TO_GPIO(MX31_PIN_CTS1), 0);
+	if (ret)
+		gpio_free(IOMUX_TO_GPIO(MX31_PIN_CTS1));
+
+	return ret;
 }
 
-static struct imxuart_platform_data uart0_pdata = {
+static void moboard_uart0_exit(struct platform_device *pdev)
+{
+	gpio_free(IOMUX_TO_GPIO(MX31_PIN_CTS1));
+}
+
+static const struct imxuart_platform_data uart0_pdata __initconst = {
 	.init = moboard_uart0_init,
+	.exit = moboard_uart0_exit,
 };
 
-static struct imxuart_platform_data uart4_pdata = {
+static const struct imxuart_platform_data uart4_pdata __initconst = {
 	.flags = IMXUART_HAVE_RTSCTS,
 };
 
-static struct imxi2c_platform_data moboard_i2c0_pdata = {
+static const struct imxi2c_platform_data moboard_i2c0_data __initconst = {
 	.bitrate = 400000,
 };
 
-static struct imxi2c_platform_data moboard_i2c1_pdata = {
+static const struct imxi2c_platform_data moboard_i2c1_data __initconst = {
 	.bitrate = 100000,
 };
 
@@ -156,18 +161,18 @@ static int moboard_spi1_cs[] = {
 	MXC_SPI_CS(2),
 };
 
-static struct spi_imx_master moboard_spi1_master = {
+static const struct spi_imx_master moboard_spi1_pdata __initconst = {
 	.chipselect	= moboard_spi1_cs,
 	.num_chipselect	= ARRAY_SIZE(moboard_spi1_cs),
 };
 
 static struct regulator_consumer_supply sdhc_consumers[] = {
 	{
-		.dev	= &mxcsdhc_device0.dev,
+		.dev_name = "mxc-mmc.0",
 		.supply	= "sdhc0_vcc",
 	},
 	{
-		.dev	= &mxcsdhc_device1.dev,
+		.dev_name = "mxc-mmc.1",
 		.supply	= "sdhc1_vcc",
 	},
 };
@@ -211,11 +216,11 @@ static struct regulator_init_data cam_vreg_data = {
 
 static struct mc13783_regulator_init_data moboard_regulators[] = {
 	{
-		.id = MC13783_REGU_VMMC1,
+		.id = MC13783_REG_VMMC1,
 		.init_data = &sdhc_vreg_data,
 	},
 	{
-		.id = MC13783_REGU_VCAM,
+		.id = MC13783_REG_VCAM,
 		.init_data = &cam_vreg_data,
 	},
 };
@@ -286,7 +291,7 @@ static int moboard_spi2_cs[] = {
 	MXC_SPI_CS(1),
 };
 
-static struct spi_imx_master moboard_spi2_master = {
+static const struct spi_imx_master moboard_spi2_pdata __initconst = {
 	.chipselect	= moboard_spi2_cs,
 	.num_chipselect	= ARRAY_SIZE(moboard_spi2_cs),
 };
@@ -338,7 +343,7 @@ static void moboard_sdhc1_exit(struct device *dev, void *data)
 	gpio_free(SDHC1_CD);
 }
 
-static struct imxmmc_platform_data sdhc1_pdata = {
+static const struct imxmmc_platform_data sdhc1_pdata __initconst = {
 	.get_ro	= moboard_sdhc1_get_ro,
 	.init	= moboard_sdhc1_init,
 	.exit	= moboard_sdhc1_exit,
@@ -397,17 +402,23 @@ static void usb_xcvr_reset(void)
 
 #if defined(CONFIG_USB_ULPI)
 
-static struct mxc_usbh_platform_data usbh2_pdata = {
+static struct mxc_usbh_platform_data usbh2_pdata __initdata = {
 	.portsc	= MXC_EHCI_MODE_ULPI | MXC_EHCI_UTMI_8BIT,
 	.flags	= MXC_EHCI_POWER_PINS_ENABLED,
 };
 
 static int __init moboard_usbh2_init(void)
 {
-	usbh2_pdata.otg = otg_ulpi_create(&mxc_ulpi_access_ops,
-			USB_OTG_DRV_VBUS | USB_OTG_DRV_VBUS_EXT);
+	struct platform_device *pdev;
 
-	return mxc_register_device(&mxc_usbh2, &usbh2_pdata);
+	usbh2_pdata.otg = otg_ulpi_create(&mxc_ulpi_access_ops,
+			ULPI_OTG_DRVVBUS | ULPI_OTG_DRVVBUS_EXT);
+
+	pdev = imx31_add_mxc_ehci_hs(2, &usbh2_pdata);
+	if (IS_ERR(pdev))
+		return PTR_ERR(pdev);
+
+	return 0;
 }
 #else
 static inline int moboard_usbh2_init(void) { return 0; }
@@ -499,22 +510,21 @@ static void __init mxc_board_init(void)
 
 	platform_add_devices(devices, ARRAY_SIZE(devices));
 
-	mxc_register_device(&mxc_uart_device0, &uart0_pdata);
+	imx31_add_imx_uart0(&uart0_pdata);
+	imx31_add_imx_uart4(&uart4_pdata);
 
-	mxc_register_device(&mxc_uart_device4, &uart4_pdata);
+	imx31_add_imx_i2c0(&moboard_i2c0_data);
+	imx31_add_imx_i2c1(&moboard_i2c1_data);
 
-	mxc_register_device(&mxc_i2c_device0, &moboard_i2c0_pdata);
-	mxc_register_device(&mxc_i2c_device1, &moboard_i2c1_pdata);
-
-	mxc_register_device(&mxc_spi_device1, &moboard_spi1_master);
-	mxc_register_device(&mxc_spi_device2, &moboard_spi2_master);
+	imx31_add_spi_imx1(&moboard_spi1_pdata);
+	imx31_add_spi_imx2(&moboard_spi2_pdata);
 
 	gpio_request(IOMUX_TO_GPIO(MX31_PIN_GPIO1_3), "pmic-irq");
 	gpio_direction_input(IOMUX_TO_GPIO(MX31_PIN_GPIO1_3));
 	spi_register_board_info(moboard_spi_board_info,
 		ARRAY_SIZE(moboard_spi_board_info));
 
-	mxc_register_device(&mxcsdhc_device0, &sdhc1_pdata);
+	imx31_add_mxc_mmc(0, &sdhc1_pdata);
 
 	mxc_register_device(&mx3_ipu, &mx3_ipu_data);
 	if (!mx31moboard_cam_alloc_dma(CAMERA_BUF_SIZE))
@@ -554,8 +564,6 @@ struct sys_timer mx31moboard_timer = {
 
 MACHINE_START(MX31MOBOARD, "EPFL Mobots mx31moboard")
 	/* Maintainer: Valentin Longchamp, EPFL Mobots group */
-	.phys_io	= MX31_AIPS1_BASE_ADDR,
-	.io_pg_offst	= (MX31_AIPS1_BASE_ADDR_VIRT >> 18) & 0xfffc,
 	.boot_params    = MX3x_PHYS_OFFSET + 0x100,
 	.map_io         = mx31_map_io,
 	.init_irq       = mx31_init_irq,

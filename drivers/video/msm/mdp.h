@@ -55,6 +55,8 @@
 
 extern uint32 mdp_hw_revision;
 extern ulong mdp4_display_intf;
+extern spinlock_t mdp_spin_lock;
+extern int mdp_rev;
 
 #define MDP4_REVISION_V1		0
 #define MDP4_REVISION_V2		1
@@ -129,14 +131,14 @@ typedef enum {
 } MDP_BLOCK_POWER_STATE;
 
 typedef enum {
-	MDP_MASTER_BLOCK,
 	MDP_CMD_BLOCK,
+	MDP_OVERLAY0_BLOCK,
+	MDP_MASTER_BLOCK,
 	MDP_PPP_BLOCK,
 	MDP_DMA2_BLOCK,
 	MDP_DMA3_BLOCK,
 	MDP_DMA_S_BLOCK,
 	MDP_DMA_E_BLOCK,
-	MDP_OVERLAY0_BLOCK,
 	MDP_OVERLAY1_BLOCK,
 	MDP_MAX_BLOCK
 } MDP_BLOCK_TYPE;
@@ -549,6 +551,11 @@ struct mdp_dma_data {
 #define DMA_IBUF_FORMAT_RGB888              0
 #define DMA_IBUF_FORMAT_xRGB8888_OR_ARGB8888  BIT(26)
 
+#ifdef CONFIG_FB_MSM_MDP303
+#define DMA_OUT_SEL_DSI_CMD                  BIT(19)
+#define DMA_OUT_SEL_DSI_VIDEO               (3 << 19)
+#endif
+
 #ifdef CONFIG_FB_MSM_MDP22
 #define DMA_OUT_SEL_MDDI BIT(14)
 #define DMA_AHBM_LCD_SEL_PRIMARY 0
@@ -651,6 +658,8 @@ int mdp_ppp_blit(struct fb_info *info, struct mdp_blit_req *req);
 void mdp_lcd_update_workqueue_handler(struct work_struct *work);
 void mdp_vsync_resync_workqueue_handler(struct work_struct *work);
 void mdp_dma2_update(struct msm_fb_data_type *mfd);
+void mdp_vsync_cfg_regs(struct msm_fb_data_type *mfd,
+	boolean first_time);
 void mdp_config_vsync(struct msm_fb_data_type *);
 uint32 mdp_get_lcd_line_counter(struct msm_fb_data_type *mfd);
 enum hrtimer_restart mdp_dma2_vsync_hrtimer_handler(struct hrtimer *ht);
@@ -679,6 +688,14 @@ void mdp_dma3_update(struct msm_fb_data_type *mfd);
 int mdp_lcdc_on(struct platform_device *pdev);
 int mdp_lcdc_off(struct platform_device *pdev);
 void mdp_lcdc_update(struct msm_fb_data_type *mfd);
+
+#ifdef CONFIG_FB_MSM_MDP303
+int mdp_dsi_video_on(struct platform_device *pdev);
+int mdp_dsi_video_off(struct platform_device *pdev);
+void mdp_dsi_video_update(struct msm_fb_data_type *mfd);
+void mdp3_dsi_cmd_dma_busy_wait(struct msm_fb_data_type *mfd);
+#endif
+
 int mdp_hw_cursor_update(struct fb_info *info, struct fb_cursor *cursor);
 int mdp_hw_cursor_sync_update(struct fb_info *info, struct fb_cursor *cursor);
 void mdp_enable_irq(uint32 term);
@@ -709,4 +726,21 @@ void mdp_dma_s_update(struct msm_fb_data_type *mfd);
 int mdp_start_histogram(struct fb_info *info);
 int mdp_stop_histogram(struct fb_info *info);
 int mdp_histogram_ctrl(boolean en);
+
+#ifdef CONFIG_FB_MSM_MDP303
+static inline void mdp4_dsi_cmd_dma_busy_wait(struct msm_fb_data_type *mfd)
+{
+	/* empty */
+}
+
+static inline void mdp4_dsi_blt_dmap_busy_wait(struct msm_fb_data_type *mfd)
+{
+	/* empty */
+}
+static inline void mdp4_overlay_dsi_state_set(int state)
+{
+	/* empty */
+}
+#endif
+
 #endif /* MDP_H */

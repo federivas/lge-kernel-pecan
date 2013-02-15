@@ -45,6 +45,7 @@ enum {
 	SDIO_CMUX_DATA_CTL_7,
 	SDIO_CMUX_USB_CTL_0,
 	SDIO_CMUX_USB_DUN_CTL_0,
+	SDIO_CMUX_CSVT_CTL_0,
 	SDIO_CMUX_NUM_CHANNELS
 };
 
@@ -102,5 +103,12 @@ int sdio_cmux_tiocmset(int id, unsigned int set, unsigned int clear);
  * @id: Channel id to be checked
  */
 int is_remote_open(int id);
+
+/*
+ * sdio_cmux_is_channel_reset - Check whether the channel is in reset state
+ *
+ * @id: Channel id to be checked
+ */
+int sdio_cmux_is_channel_reset(int id);
 
 #endif /* __SDIO_CMUX__ */

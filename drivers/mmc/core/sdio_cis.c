@@ -21,8 +21,6 @@
 #include <linux/mmc/sdio.h>
 #include <linux/mmc/sdio_func.h>
 
-#include <asm/mach-types.h>
-
 #include "sdio_cis.h"
 #include "sdio_ops.h"
 
@@ -276,7 +274,8 @@ static int sdio_read_cis(struct mmc_card *card, struct sdio_func *func)
 			if (card->cis.vendor == 0x70 &&
 				(card->cis.device == 0x2460 ||
 				 card->cis.device == 0x0460 ||
-				 card->cis.device == 0x23F1))
+				 card->cis.device == 0x23F1 ||
+				 card->cis.device == 0x23F0))
 				break;
 			else
 				continue;

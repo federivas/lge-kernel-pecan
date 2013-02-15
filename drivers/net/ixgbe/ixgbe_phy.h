@@ -48,6 +48,7 @@
 #define IXGBE_SFF_DA_SPEC_ACTIVE_LIMITING    0x4
 #define IXGBE_SFF_1GBASESX_CAPABLE           0x1
 #define IXGBE_SFF_1GBASELX_CAPABLE           0x2
+#define IXGBE_SFF_1GBASET_CAPABLE            0x8
 #define IXGBE_SFF_10GBASESR_CAPABLE          0x10
 #define IXGBE_SFF_10GBASELR_CAPABLE          0x20
 #define IXGBE_I2C_EEPROM_READ_MASK           0x100
@@ -95,6 +96,9 @@ s32 ixgbe_setup_phy_link_speed_generic(struct ixgbe_hw *hw,
                                        ixgbe_link_speed speed,
                                        bool autoneg,
                                        bool autoneg_wait_to_complete);
+s32 ixgbe_get_copper_link_capabilities_generic(struct ixgbe_hw *hw,
+                                               ixgbe_link_speed *speed,
+                                               bool *autoneg);
 
 /* PHY specific */
 s32 ixgbe_check_phy_link_tnx(struct ixgbe_hw *hw,
@@ -102,6 +106,8 @@ s32 ixgbe_check_phy_link_tnx(struct ixgbe_hw *hw,
                              bool *link_up);
 s32 ixgbe_get_phy_firmware_version_tnx(struct ixgbe_hw *hw,
                                        u16 *firmware_version);
+s32 ixgbe_get_phy_firmware_version_generic(struct ixgbe_hw *hw,
+                                           u16 *firmware_version);
 
 s32 ixgbe_reset_phy_nl(struct ixgbe_hw *hw);
 s32 ixgbe_identify_sfp_module_generic(struct ixgbe_hw *hw);

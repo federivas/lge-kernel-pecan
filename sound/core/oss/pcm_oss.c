@@ -453,8 +453,10 @@ static int snd_pcm_hw_param_near(struct snd_pcm_substream *pcm,
 	} else {
 		*params = *save;
 		max = snd_pcm_hw_param_max(pcm, params, var, max, &maxdir);
-		if (max < 0)
+		if (max < 0) {
+			kfree(save);
 			return max;
+		}
 		last = 1;
 	}
  _end:
@@ -1513,7 +1515,7 @@ static int snd_pcm_oss_reset(struct snd_pcm_oss_file *pcm_oss_file)
 	struct snd_pcm_runtime *runtime;
 	int i;
 
-	for (i = 0; i < 2; i++) {
+	for (i = 0; i < 2; i++) { 
 		substream = pcm_oss_file->streams[i];
 		if (!substream)
 			continue;

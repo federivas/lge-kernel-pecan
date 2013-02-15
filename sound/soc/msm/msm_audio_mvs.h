@@ -320,6 +320,8 @@ struct audio_mvs_info_type {
 
 struct audio_voip_info_type {
 	enum audio_mvs_state_type state;
+	enum audio_mvs_state_type playback_state;
+	enum audio_mvs_state_type capture_state;
 
 	unsigned int pcm_playback_size;
 	unsigned int pcm_count;
@@ -374,8 +376,9 @@ struct msm_audio_mvs_config {
 	uint32_t mvs_mode;
 	uint32_t bit_rate;
 };
-extern struct snd_soc_dai msm_mvs_dais[2];
+
+extern struct snd_soc_dai_driver msm_mvs_dais[2];
 extern struct snd_soc_codec_device soc_codec_dev_msm_mvs;
-extern struct snd_soc_platform msm_mvs_soc_platform;
-extern struct snd_soc_platform msm_voip_soc_platform;
+extern struct snd_soc_platform_driver msm_mvs_soc_platform;
+extern struct snd_soc_platform_driver msm_voip_soc_platform;
 #endif /* __MSM_AUDIO_MVS_H */

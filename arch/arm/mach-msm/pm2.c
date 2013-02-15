@@ -3,7 +3,7 @@
  * MSM Power Management Routines
  *
  * Copyright (C) 2007 Google, Inc.
- * Copyright (c) 2008-2010, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2008-2011 Code Aurora Forum. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -29,7 +29,6 @@
 #include <linux/uaccess.h>
 #include <linux/io.h>
 #include <linux/memory.h>
-#include <linux/console.h>
 #ifdef CONFIG_HAS_WAKELOCK
 #include <linux/wakelock.h>
 #endif
@@ -46,9 +45,6 @@
 #include <asm/vfp.h>
 #endif
 
-#ifdef CONFIG_MACH_LGE
-#include <mach/board_lge.h>
-#endif
 #ifdef CONFIG_MSM_MEMORY_LOW_POWER_MODE_SUSPEND_DEEP_POWER_DOWN
 #include <mach/msm_migrate_pages.h>
 #endif
@@ -65,7 +61,6 @@
 #include "pm.h"
 #include "spm.h"
 #include "sirc.h"
-
 
 /******************************************************************************
  * Debug Definitions
@@ -100,7 +95,8 @@ module_param_named(
 			"SMSM_POWER_MASTER_DEM %x, SMSM_MODEM_STATE %x, " \
 			"SMSM_APPS_DEM %x\n", \
 			tag, \
-			readl(APPS_CLK_SLEEP_EN), readl(APPS_PWRDOWN), \
+			__raw_readl(APPS_CLK_SLEEP_EN), \
+			__raw_readl(APPS_PWRDOWN), \
 			smsm_get_state(SMSM_POWER_MASTER_DEM), \
 			smsm_get_state(SMSM_MODEM_STATE), \
 			smsm_get_state(SMSM_APPS_DEM)); \
@@ -116,7 +112,6 @@ module_param_named(
 				msm_pm_smem_data->pending_irqs); \
 	} while (0)
 
-#define MAX_NR_CLKS 33
 
 /******************************************************************************
  * Sleep Modes and Parameters
@@ -140,11 +135,20 @@ module_param_named(
 	int, S_IRUGO | S_IWUSR | S_IWGRP
 );
 
-#define MSM_PM_MODE_ATTR_SUSPEND_ENABLED "suspend_enabled"
-#define MSM_PM_MODE_ATTR_IDLE_ENABLED "idle_enabled"
-#define MSM_PM_MODE_ATTR_LATENCY "latency"
-#define MSM_PM_MODE_ATTR_RESIDENCY "residency"
-#define MSM_PM_MODE_ATTR_NR (4)
+enum {
+	MSM_PM_MODE_ATTR_SUSPEND,
+	MSM_PM_MODE_ATTR_IDLE,
+	MSM_PM_MODE_ATTR_LATENCY,
+	MSM_PM_MODE_ATTR_RESIDENCY,
+	MSM_PM_MODE_ATTR_NR,
+};
+
+static char *msm_pm_mode_attr_labels[MSM_PM_MODE_ATTR_NR] = {
+	[MSM_PM_MODE_ATTR_SUSPEND] = "suspend_enabled",
+	[MSM_PM_MODE_ATTR_IDLE] = "idle_enabled",
+	[MSM_PM_MODE_ATTR_LATENCY] = "latency",
+	[MSM_PM_MODE_ATTR_RESIDENCY] = "residency",
+};
 
 static char *msm_pm_sleep_mode_labels[MSM_PM_SLEEP_MODE_NR] = {
 	[MSM_PM_SLEEP_MODE_POWER_COLLAPSE_SUSPEND] = " ",
@@ -185,21 +189,21 @@ static ssize_t msm_pm_mode_attr_show(
 			continue;
 
 		if (!strcmp(attr->attr.name,
-			MSM_PM_MODE_ATTR_SUSPEND_ENABLED)) {
+			msm_pm_mode_attr_labels[MSM_PM_MODE_ATTR_SUSPEND])) {
 			u32 arg = msm_pm_modes[i].suspend_enabled;
 			kp.arg = &arg;
 			ret = param_get_ulong(buf, &kp);
 		} else if (!strcmp(attr->attr.name,
-			MSM_PM_MODE_ATTR_IDLE_ENABLED)) {
+			msm_pm_mode_attr_labels[MSM_PM_MODE_ATTR_IDLE])) {
 			u32 arg = msm_pm_modes[i].idle_enabled;
 			kp.arg = &arg;
 			ret = param_get_ulong(buf, &kp);
 		} else if (!strcmp(attr->attr.name,
-			MSM_PM_MODE_ATTR_LATENCY)) {
+			msm_pm_mode_attr_labels[MSM_PM_MODE_ATTR_LATENCY])) {
 			kp.arg = &msm_pm_modes[i].latency;
 			ret = param_get_ulong(buf, &kp);
 		} else if (!strcmp(attr->attr.name,
-			MSM_PM_MODE_ATTR_RESIDENCY)) {
+			msm_pm_mode_attr_labels[MSM_PM_MODE_ATTR_RESIDENCY])) {
 			kp.arg = &msm_pm_modes[i].residency;
 			ret = param_get_ulong(buf, &kp);
 		}
@@ -234,19 +238,19 @@ static ssize_t msm_pm_mode_attr_store(struct kobject *kobj,
 			continue;
 
 		if (!strcmp(attr->attr.name,
-			MSM_PM_MODE_ATTR_SUSPEND_ENABLED)) {
+			msm_pm_mode_attr_labels[MSM_PM_MODE_ATTR_SUSPEND])) {
 			kp.arg = &msm_pm_modes[i].suspend_enabled;
 			ret = param_set_byte(buf, &kp);
 		} else if (!strcmp(attr->attr.name,
-			MSM_PM_MODE_ATTR_IDLE_ENABLED)) {
+			msm_pm_mode_attr_labels[MSM_PM_MODE_ATTR_IDLE])) {
 			kp.arg = &msm_pm_modes[i].idle_enabled;
 			ret = param_set_byte(buf, &kp);
 		} else if (!strcmp(attr->attr.name,
-			MSM_PM_MODE_ATTR_LATENCY)) {
+			msm_pm_mode_attr_labels[MSM_PM_MODE_ATTR_LATENCY])) {
 			kp.arg = &msm_pm_modes[i].latency;
 			ret = param_set_ulong(buf, &kp);
 		} else if (!strcmp(attr->attr.name,
-			MSM_PM_MODE_ATTR_RESIDENCY)) {
+			msm_pm_mode_attr_labels[MSM_PM_MODE_ATTR_RESIDENCY])) {
 			kp.arg = &msm_pm_modes[i].residency;
 			ret = param_set_ulong(buf, &kp);
 		}
@@ -270,7 +274,7 @@ static int __init msm_pm_mode_sysfs_add(void)
 	struct attribute **attrs;
 	struct kobj_attribute *kobj_attrs;
 
-	int i, k;
+	int i, j, k;
 	int ret;
 
 	module_kobj = kset_find_obj(module_kset, KBUILD_MODNAME);
@@ -289,7 +293,8 @@ static int __init msm_pm_mode_sysfs_add(void)
 	}
 
 	for (i = 0; i < ARRAY_SIZE(msm_pm_mode_kobjs); i++) {
-		if (!msm_pm_modes[i].supported)
+		if (!msm_pm_modes[i].suspend_supported &&
+				!msm_pm_modes[i].idle_supported)
 			continue;
 
 		kobj = kobject_create_and_add(
@@ -308,19 +313,22 @@ static int __init msm_pm_mode_sysfs_add(void)
 			goto mode_sysfs_add_abort;
 		}
 
-		kobj_attrs[0].attr.name = MSM_PM_MODE_ATTR_SUSPEND_ENABLED;
-		kobj_attrs[1].attr.name = MSM_PM_MODE_ATTR_IDLE_ENABLED;
-		kobj_attrs[2].attr.name = MSM_PM_MODE_ATTR_LATENCY;
-		kobj_attrs[3].attr.name = MSM_PM_MODE_ATTR_RESIDENCY;
+		for (k = 0, j = 0; k < MSM_PM_MODE_ATTR_NR; k++) {
+			if ((k == MSM_PM_MODE_ATTR_SUSPEND) &&
+				(!msm_pm_modes[i].suspend_supported))
+				continue;
+			if ((k == MSM_PM_MODE_ATTR_IDLE) &&
+				(!msm_pm_modes[i].idle_supported))
+				continue;
 
-		for (k = 0; k < MSM_PM_MODE_ATTR_NR; k++) {
-			kobj_attrs[k].attr.mode = 0644;
-			kobj_attrs[k].show = msm_pm_mode_attr_show;
-			kobj_attrs[k].store = msm_pm_mode_attr_store;
-
-			attrs[k] = &kobj_attrs[k].attr;
+			kobj_attrs[j].attr.mode = 0644;
+			kobj_attrs[j].show = msm_pm_mode_attr_show;
+			kobj_attrs[j].store = msm_pm_mode_attr_store;
+			kobj_attrs[j].attr.name = msm_pm_mode_attr_labels[k];
+			attrs[j] = &kobj_attrs[j].attr;
+			j++;
 		}
-		attrs[MSM_PM_MODE_ATTR_NR] = NULL;
+		attrs[j] = NULL;
 
 		attr_group->attrs = attrs;
 		ret = sysfs_create_group(kobj, attr_group);
@@ -407,21 +415,28 @@ enum {
 static void msm_pm_config_hw_before_power_down(void)
 {
 #if defined(CONFIG_ARCH_MSM7X30)
-	writel(1, APPS_PWRDOWN);
-	dsb();
-	writel(4, APPS_SECOP);
+	__raw_writel(1, APPS_PWRDOWN);
+	mb();
+	__raw_writel(4, APPS_SECOP);
+	mb();
 #elif defined(CONFIG_ARCH_MSM7X27)
-	writel(0x1f, APPS_CLK_SLEEP_EN);
-	dsb();
-	writel(1, APPS_PWRDOWN);
+	__raw_writel(0x1f, APPS_CLK_SLEEP_EN);
+	mb();
+	__raw_writel(1, APPS_PWRDOWN);
+	mb();
+#elif defined(CONFIG_ARCH_MSM7x27A)
+	__raw_writel(0x7, APPS_CLK_SLEEP_EN);
+	mb();
+	__raw_writel(1, APPS_PWRDOWN);
+	mb();
 #else
-	writel(0x1f, APPS_CLK_SLEEP_EN);
-	dsb();
-	writel(1, APPS_PWRDOWN);
-	dsb();
-	writel(0, APPS_STANDBY_CTL);
+	__raw_writel(0x1f, APPS_CLK_SLEEP_EN);
+	mb();
+	__raw_writel(1, APPS_PWRDOWN);
+	mb();
+	__raw_writel(0, APPS_STANDBY_CTL);
+	mb();
 #endif
-	dsb();
 }
 
 /*
@@ -430,16 +445,21 @@ static void msm_pm_config_hw_before_power_down(void)
 static void msm_pm_config_hw_after_power_up(void)
 {
 #if defined(CONFIG_ARCH_MSM7X30)
-	writel(0, APPS_SECOP);
-	dsb();
-	writel(0, APPS_PWRDOWN);
-	dsb();
+	__raw_writel(0, APPS_SECOP);
+	mb();
+	__raw_writel(0, APPS_PWRDOWN);
+	mb();
 	msm_spm_reinit();
+#elif defined(CONFIG_ARCH_MSM7x27A)
+	__raw_writel(0, APPS_PWRDOWN);
+	mb();
+	__raw_writel(0, APPS_CLK_SLEEP_EN);
+	mb();
 #else
-	writel(0, APPS_PWRDOWN);
-	dsb();
-	writel(0, APPS_CLK_SLEEP_EN);
-	dsb();
+	__raw_writel(0, APPS_PWRDOWN);
+	mb();
+	__raw_writel(0, APPS_CLK_SLEEP_EN);
+	mb();
 #endif
 }
 
@@ -449,11 +469,15 @@ static void msm_pm_config_hw_after_power_up(void)
 static void msm_pm_config_hw_before_swfi(void)
 {
 #if defined(CONFIG_ARCH_QSD8X50)
-	writel(0x1f, APPS_CLK_SLEEP_EN);
+	__raw_writel(0x1f, APPS_CLK_SLEEP_EN);
+	mb();
 #elif defined(CONFIG_ARCH_MSM7X27)
-	writel(0x0f, APPS_CLK_SLEEP_EN);
+	__raw_writel(0x0f, APPS_CLK_SLEEP_EN);
+	mb();
+#elif defined(CONFIG_ARCH_MSM7X27A)
+	__raw_writel(0x7, APPS_CLK_SLEEP_EN);
+	mb();
 #endif
-	dsb();
 }
 
 /*
@@ -711,7 +735,6 @@ static struct msm_pm_time_stats {
 };
 
 static uint32_t msm_pm_sleep_limit = SLEEP_LIMIT_NONE;
-static DECLARE_BITMAP(msm_pm_clocks_no_tcxo_shutdown, MAX_NR_CLKS);
 
 /*
  * Add the given time data to the statistics collection.
@@ -771,7 +794,6 @@ static int msm_pm_read_proc
 {
 	int i;
 	char *p = page;
-	char clk_name[16];
 
 	if (count < 1024) {
 		*start = (char *) 0;
@@ -780,13 +802,6 @@ static int msm_pm_read_proc
 	}
 
 	if (!off) {
-		SNPRINTF(p, count, "Clocks against last TCXO shutdown:\n");
-		for_each_set_bit(i, msm_pm_clocks_no_tcxo_shutdown, MAX_NR_CLKS) {
-			clk_name[0] = '\0';
-			msm_clock_get_name(i, clk_name, sizeof(clk_name));
-			SNPRINTF(p, count, "  %s (id=%d)\n", clk_name, i);
-		}
-
 		SNPRINTF(p, count, "Last power collapse voted ");
 		if ((msm_pm_sleep_limit & SLEEP_LIMIT_MASK) ==
 			SLEEP_LIMIT_NONE)
@@ -878,7 +893,6 @@ static int msm_pm_write_proc(struct file *file, const char __user *buffer,
 	}
 
 	msm_pm_sleep_limit = SLEEP_LIMIT_NONE;
-	bitmap_zero(msm_pm_clocks_no_tcxo_shutdown, MAX_NR_CLKS);
 	local_irq_restore(flags);
 
 	return count;
@@ -1395,7 +1409,6 @@ void arch_idle(void)
 	int i;
 
 #ifdef CONFIG_MSM_IDLE_STATS
-	DECLARE_BITMAP(clk_ids, MAX_NR_CLKS);
 	int64_t t1;
 	static int64_t t2;
 	int exit_stat;
@@ -1456,7 +1469,7 @@ void arch_idle(void)
 
 	for (i = 0; i < ARRAY_SIZE(allow); i++) {
 		struct msm_pm_platform_data *mode = &msm_pm_modes[i];
-		if (!mode->supported || !mode->idle_enabled ||
+		if (!mode->idle_supported || !mode->idle_enabled ||
 			mode->latency >= latency_qos ||
 			mode->residency * 1000ULL >= timer_expiration)
 			allow[i] = false;
@@ -1481,17 +1494,6 @@ void arch_idle(void)
 				= false;
 		}
 	}
-
-#ifdef CONFIG_MSM_IDLE_STATS
-	ret = msm_clock_require_tcxo(clk_ids, MAX_NR_CLKS);
-#elif defined(CONFIG_CLOCK_BASED_SLEEP_LIMIT)
-	ret = msm_clock_require_tcxo(NULL, 0);
-#endif /* CONFIG_MSM_IDLE_STATS */
-
-#ifdef CONFIG_CLOCK_BASED_SLEEP_LIMIT
-	if (ret)
-		sleep_limit = SLEEP_LIMIT_NO_TCXO_SHUTDOWN;
-#endif
 
 	MSM_PM_DPRINTK(MSM_PM_DEBUG_IDLE, KERN_INFO,
 		"%s(): latency qos %d, next timer %lld, sleep limit %u\n",
@@ -1529,8 +1531,6 @@ void arch_idle(void)
 		else {
 			exit_stat = MSM_PM_STAT_IDLE_POWER_COLLAPSE;
 			msm_pm_sleep_limit = sleep_limit;
-			bitmap_copy(msm_pm_clocks_no_tcxo_shutdown, clk_ids,
-				MAX_NR_CLKS);
 		}
 #endif /* CONFIG_MSM_IDLE_STATS */
 	} else if (allow[MSM_PM_SLEEP_MODE_APPS_SLEEP]) {
@@ -1610,19 +1610,10 @@ static int msm_pm_enter(suspend_state_t state)
 	int i;
 
 #ifdef CONFIG_MSM_IDLE_STATS
-	DECLARE_BITMAP(clk_ids, MAX_NR_CLKS);
 	int64_t period = 0;
 	int64_t time = 0;
 
 	time = msm_timer_get_sclk_time(&period);
-	ret = msm_clock_require_tcxo(clk_ids, MAX_NR_CLKS);
-#elif defined(CONFIG_CLOCK_BASED_SLEEP_LIMIT)
-	ret = msm_clock_require_tcxo(NULL, 0);
-#endif /* CONFIG_MSM_IDLE_STATS */
-
-#ifdef CONFIG_CLOCK_BASED_SLEEP_LIMIT
-	if (ret)
-		sleep_limit = SLEEP_LIMIT_NO_TCXO_SHUTDOWN;
 #endif
 
 	MSM_PM_DPRINTK(MSM_PM_DEBUG_SUSPEND, KERN_INFO,
@@ -1657,7 +1648,7 @@ static int msm_pm_enter(suspend_state_t state)
 
 	for (i = 0; i < ARRAY_SIZE(allow); i++) {
 		struct msm_pm_platform_data *mode = &msm_pm_modes[i];
-		if (!mode->supported || !mode->suspend_enabled)
+		if (!mode->suspend_supported || !mode->suspend_enabled)
 			allow[i] = false;
 	}
 
@@ -1704,8 +1695,6 @@ static int msm_pm_enter(suspend_state_t state)
 		else {
 			id = MSM_PM_STAT_SUSPEND;
 			msm_pm_sleep_limit = sleep_limit;
-			bitmap_copy(msm_pm_clocks_no_tcxo_shutdown, clk_ids,
-				MAX_NR_CLKS);
 		}
 
 		if (time != 0) {
@@ -1749,58 +1738,9 @@ static struct platform_suspend_ops msm_pm_ops = {
 
 static uint32_t restart_reason = 0x776655AA;
 
-#ifdef CONFIG_MACH_LGE
-/* LGE_CHANGE
- * flush console before reboot
- * from google's mahimahi kernel
- * 2010-05-04, cleaneye.kim@lge.com
- */
-
-static bool console_flushed;
-
-void msm_pm_flush_console(void)
-{
-	if (console_flushed)
-		return;
-	console_flushed = true;
-
-	printk("\n");
-	printk(KERN_EMERG "Restarting %s\n", linux_banner);
-	if (!try_acquire_console_sem()) {
-		release_console_sem();
-		return;
-	}
-
-	mdelay(50);
-
-	local_irq_disable();
-	if (try_acquire_console_sem())
-		printk(KERN_EMERG "msm_restart: Console was locked! Busting\n");
-	else
-		printk(KERN_EMERG "msm_restart: Console was locked!\n");
-	release_console_sem();
-}
-#endif
-
 static void msm_pm_power_off(void)
 {
-
-#ifdef CONFIG_MACH_LGE
-	/* To prevent Phone freezing during power off
-	 * blue.park@lge.com 2010-04-14 <To prevent Phone freezing during power off>
-	 */
-	smsm_change_state_nonotify(SMSM_APPS_STATE,
-						  0, SMSM_SYSTEM_POWER_DOWN);
-#endif
-
-/* FIXME: Block the rpcrouter close when system restart
- *	  Sometimes, RPC CALL is called atfer RPC is closed
- *        taehung.kim@lge.com
- */
-#if 0
 	msm_rpcrouter_close();
-#endif
-	printk(KERN_INFO"%s: \n",__func__);
 	msm_proc_comm(PCOM_POWER_DOWN, 0, 0);
 	for (;;)
 		;
@@ -1808,55 +1748,8 @@ static void msm_pm_power_off(void)
 
 static void msm_pm_restart(char str, const char *cmd)
 {
-#ifdef CONFIG_MACH_LGE
-	/* LGE_CHANGE
-	 * flush console before reboot
-	 * from google's mahimahi kernel
-	 * 2010-05-04, cleaneye.kim@lge.com
-	 */
-    unsigned long irqflags;
-	static DEFINE_SPINLOCK(state_lock);
-	msm_pm_flush_console();
-	if (restart_reason == 0x776655BB) {
-		void *copy_addr;
-		unsigned int *rc_buffer;
-
-		copy_addr = lge_get_fb_copy_virt_addr();
-		*((unsigned *)copy_addr) = restart_reason;
-
-		rc_buffer = (unsigned int *)get_ram_console_buffer();
-		*rc_buffer = 0x0;
-
-		spin_lock_irqsave(&state_lock, irqflags);
-		/*
-		 * 2011-03-27, jinkyu.choi@lge.com
-		 * instead of the arm9 crash, use the PCOM_RESET_CHIP_IMM for fast reboot.
-		 */
-		msm_proc_comm(PCOM_RESET_CHIP_IMM, &restart_reason, 0);
-
-		while (1)
-			;
-	}
-#endif
-
-/* FIXME: Block the rpcrouter close when system restart
- *	  Sometimes, RPC CALL is called atfer RPC is closed
- *        taehung.kim@lge.com
- */
-#if 0
 	msm_rpcrouter_close();
-#endif
-
-	/*
-	 * 2011-04-20, jinkyu.choi@lge.com,
-	 * use the PCOM_RESET_CHIP_IMM,
-	 * because the reboot reason is overwritten by another rpoc_com such as ebi1_clk_min
-	 */
-#ifdef CONFIG_MACH_LGE
-	msm_proc_comm(PCOM_RESET_CHIP_IMM, &restart_reason, 0);
-#else /* QCT origin */
 	msm_proc_comm(PCOM_RESET_CHIP, &restart_reason, 0);
-#endif
 
 	for (;;)
 		;
@@ -1876,11 +1769,6 @@ static int msm_reboot_call
 		} else if (!strncmp(cmd, "oem-", 4)) {
 			unsigned code = simple_strtoul(cmd + 4, 0, 16) & 0xff;
 			restart_reason = 0x6f656d00 | code;
-		} else if (!strncmp(cmd, "", 1)) {
-			restart_reason = 0x776655AA;
-		} else if (!strncmp(cmd, "charge_reset", 12)) {
-			restart_reason = 0x776655BB;
-
 		} else {
 			restart_reason = 0x77665501;
 		}
@@ -1892,14 +1780,6 @@ static struct notifier_block msm_reboot_notifier = {
 	.notifier_call = msm_reboot_call,
 };
 
-#if defined(CONFIG_MACH_LGE)
-void lge_set_reboot_reason(unsigned int reason)
-{
-	restart_reason = reason;
-
-	return;
-}
-#endif
 
 /******************************************************************************
  *
@@ -1921,6 +1801,7 @@ static int __init msm_pm_init(void)
 #ifdef CONFIG_CPU_V7
 	pgd_t *pc_pgd;
 	pmd_t *pmd;
+	unsigned long pmdval;
 
 	/* Page table for cores to come back up safely. */
 	pc_pgd = pgd_alloc(&init_mm);
@@ -1929,8 +1810,18 @@ static int __init msm_pm_init(void)
 	pmd = pmd_offset(pc_pgd +
 			 pgd_index(virt_to_phys(msm_pm_collapse_exit)),
 			 virt_to_phys(msm_pm_collapse_exit));
-	*pmd = __pmd((virt_to_phys(msm_pm_collapse_exit) & PGDIR_MASK) |
-		     PMD_TYPE_SECT | PMD_SECT_AP_WRITE);
+	pmdval = (virt_to_phys(msm_pm_collapse_exit) & PGDIR_MASK) |
+		     PMD_TYPE_SECT | PMD_SECT_AP_WRITE;
+	pmd[0] = __pmd(pmdval);
+	pmd[1] = __pmd(pmdval + (1 << (PGDIR_SHIFT - 1)));
+
+	/* It is remotely possible that the code in msm_pm_collapse_exit()
+	 * which turns on the MMU with this mapping is in the
+	 * next even-numbered megabyte beyond the
+	 * start of msm_pm_collapse_exit().
+	 * Map this megabyte in as well.
+	 */
+	pmd[2] = __pmd(pmdval + (2 << (PGDIR_SHIFT - 1)));
 	flush_pmd_entry(pmd);
 	msm_pm_pc_pgd = virt_to_phys(pc_pgd);
 #endif
@@ -1945,8 +1836,7 @@ static int __init msm_pm_init(void)
 		printk(KERN_ERR "%s: failed to get smsm_data\n", __func__);
 		return -ENODEV;
 	}
-
-#ifdef CONFIG_ARCH_MSM_SCORPION
+#if defined(CONFIG_ARCH_MSM_SCORPION) && !defined(CONFIG_MSM_SMP)
 	/* The bootloader is responsible for initializing many of Scorpion's
 	 * coprocessor registers for things like cache timing. The state of
 	 * these coprocessor registers is lost on reset, so part of the
@@ -1997,6 +1887,7 @@ static int __init msm_pm_init(void)
 		d_entry->data = NULL;
 	}
 #endif
+
 	return 0;
 }
 

@@ -8,11 +8,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
  */
 
 #define DEBUG
@@ -62,6 +57,7 @@ struct sdio_cmux_ch {
 	wait_queue_head_t open_wait_queue;
 	int is_remote_open;
 	int is_local_open;
+	int is_channel_reset;
 
 	char local_status;
 	char remote_status;
@@ -117,6 +113,11 @@ static struct workqueue_struct *sdio_cmux_wq;
 static struct sdio_channel *sdio_qmi_chl;
 static uint32_t sdio_cmux_inited;
 
+static uint32_t abort_tx;
+static DEFINE_MUTEX(modem_reset_lock);
+
+static DEFINE_MUTEX(probe_lock);
+
 enum {
 	MSM_SDIO_CMUX_DEBUG = 1U << 0,
 	MSM_SDIO_CMUX_DUMP_BUFFER = 1U << 1,
@@ -162,6 +163,7 @@ static int sdio_cmux_ch_alloc(int id)
 	init_waitqueue_head(&logical_ch[id].open_wait_queue);
 	logical_ch[id].is_remote_open = 0;
 	logical_ch[id].is_local_open = 0;
+	logical_ch[id].is_channel_reset = 0;
 
 	INIT_LIST_HEAD(&logical_ch[id].tx_list);
 	mutex_init(&logical_ch[id].tx_lock);
@@ -183,7 +185,6 @@ static int sdio_cmux_ch_clear_and_signal(int id)
 
 	mutex_lock(&logical_ch[id].lc_lock);
 	logical_ch[id].is_remote_open = 0;
-	logical_ch[id].is_local_open = 0;
 	mutex_lock(&logical_ch[id].tx_lock);
 	while (!list_empty(&logical_ch[id].tx_list)) {
 		list_elem = list_first_entry(&logical_ch[id].tx_list,
@@ -194,9 +195,10 @@ static int sdio_cmux_ch_clear_and_signal(int id)
 		kfree(list_elem);
 	}
 	mutex_unlock(&logical_ch[id].tx_lock);
-	logical_ch[id].priv = NULL;
-	logical_ch[id].receive_cb = NULL;
-	logical_ch[id].write_done = NULL;
+	if (logical_ch[id].receive_cb)
+		logical_ch[id].receive_cb(NULL, 0, logical_ch[id].priv);
+	if (logical_ch[id].write_done)
+		logical_ch[id].write_done(NULL, 0, logical_ch[id].priv);
 	mutex_unlock(&logical_ch[id].lc_lock);
 	wake_up(&logical_ch[id].open_wait_queue);
 	return 0;
@@ -347,6 +349,13 @@ EXPORT_SYMBOL(sdio_cmux_close);
 int sdio_cmux_write_avail(int id)
 {
 	int write_avail;
+
+	mutex_lock(&logical_ch[id].lc_lock);
+	if (logical_ch[id].is_channel_reset) {
+		mutex_unlock(&logical_ch[id].lc_lock);
+		return -ENETRESET;
+	}
+	mutex_unlock(&logical_ch[id].lc_lock);
 	write_avail = sdio_write_avail(sdio_qmi_chl);
 	return write_avail - bytes_to_write;
 }
@@ -358,6 +367,7 @@ int sdio_cmux_write(int id, void *data, int len)
 	uint32_t write_size;
 	void *write_data = NULL;
 	struct sdio_cmux_ch *ch;
+	int ret;
 
 	if (!sdio_cmux_inited)
 		return -ENODEV;
@@ -403,10 +413,14 @@ int sdio_cmux_write(int id, void *data, int len)
 	if (!ch->is_remote_open || !ch->is_local_open) {
 		pr_err("%s: Local ch%d sending data before sending/receiving"
 		       " OPEN command\n", __func__, ch->lc_id);
+		if (ch->is_channel_reset)
+			ret = -ENETRESET;
+		else
+			ret = -ENODEV;
 		mutex_unlock(&ch->lc_lock);
 		kfree(write_data);
 		kfree(list_elem);
-		return -ENODEV;
+		return ret;
 	}
 	mutex_lock(&ch->tx_lock);
 	list_add_tail(&list_elem->list, &ch->tx_list);
@@ -430,6 +444,19 @@ int is_remote_open(int id)
 	return logical_ch_is_remote_open(id);
 }
 EXPORT_SYMBOL(is_remote_open);
+
+int sdio_cmux_is_channel_reset(int id)
+{
+	int ret;
+	if (id < 0 || id >= SDIO_CMUX_NUM_CHANNELS)
+		return -ENODEV;
+
+	mutex_lock(&logical_ch[id].lc_lock);
+	ret = logical_ch[id].is_channel_reset;
+	mutex_unlock(&logical_ch[id].lc_lock);
+	return ret;
+}
+EXPORT_SYMBOL(sdio_cmux_is_channel_reset);
 
 int sdio_cmux_tiocmget(int id)
 {
@@ -504,6 +531,10 @@ static int process_cmux_pkt(void *pkt, int size)
 		D("%s: Received OPEN command for ch%d\n", __func__, id);
 		mutex_lock(&logical_ch[id].lc_lock);
 		logical_ch[id].is_remote_open = 1;
+		if (logical_ch[id].is_channel_reset) {
+			sdio_cmux_write_cmd(id, OPEN);
+			logical_ch[id].is_channel_reset = 0;
+		}
 		mutex_unlock(&logical_ch[id].lc_lock);
 		wake_up(&logical_ch[id].open_wait_queue);
 		break;
@@ -637,25 +668,39 @@ static void sdio_cmux_fn(struct work_struct *work)
 			write_size = sizeof(struct sdio_cmux_hdr) +
 				(uint32_t)list_elem->cmux_pkt.hdr->pkt_len;
 
-			while ((write_avail = sdio_write_avail(sdio_qmi_chl))
-						< write_size) {
+			mutex_lock(&modem_reset_lock);
+			while (!(abort_tx) &&
+				((write_avail = sdio_write_avail(sdio_qmi_chl))
+						< write_size)) {
+				mutex_unlock(&modem_reset_lock);
 				pr_err("%s: sdio_write_avail %d bytes, "
 				       "write size %d bytes. Waiting...\n",
 					__func__, write_avail, write_size);
 				msleep(250);
+				mutex_lock(&modem_reset_lock);
 			}
-			while (((r = sdio_write(sdio_qmi_chl,
+			while (!(abort_tx) &&
+				((r = sdio_write(sdio_qmi_chl,
 						write_data, write_size)) < 0)
+				&& (r != -ENODEV)
 				&& (write_retry++ < MAX_WRITE_RETRY)) {
+				mutex_unlock(&modem_reset_lock);
 				pr_err("%s: sdio_write failed with rc %d."
 				       "Retrying...", __func__, r);
 				msleep(250);
+				mutex_lock(&modem_reset_lock);
 			}
-			if (!r) {
+			if (!r && !abort_tx) {
 				D("%s: sdio_write_completed %dbytes\n",
 				  __func__, write_size);
 				bytes_written += write_size;
+			} else if (r == -ENODEV) {
+				pr_err("%s: aborting_tx because sdio_write"
+				       " returned %d\n", __func__, r);
+				r = 0;
+				abort_tx = 1;
 			}
+			mutex_unlock(&modem_reset_lock);
 			kfree(list_elem->cmux_pkt.hdr);
 			kfree(list_elem);
 			mutex_lock(&write_lock);
@@ -731,7 +776,23 @@ static int sdio_cmux_probe(struct platform_device *pdev)
 {
 	int i, r;
 
+	mutex_lock(&probe_lock);
 	D("%s Begins\n", __func__);
+	if (sdio_cmux_inited) {
+		mutex_lock(&modem_reset_lock);
+		r =  sdio_open("SDIO_QMI", &sdio_qmi_chl, NULL,
+				sdio_qmi_chl_notify);
+		if (r < 0) {
+			mutex_unlock(&modem_reset_lock);
+			pr_err("%s: sdio_open() failed\n", __func__);
+			goto error0;
+		}
+		abort_tx = 0;
+		mutex_unlock(&modem_reset_lock);
+		mutex_unlock(&probe_lock);
+		return 0;
+	}
+
 	for (i = 0; i < SDIO_CMUX_NUM_CHANNELS; ++i)
 		sdio_cmux_ch_alloc(i);
 	INIT_LIST_HEAD(&temp_rx_list);
@@ -761,6 +822,7 @@ static int sdio_cmux_probe(struct platform_device *pdev)
 	platform_device_register(&sdio_ctl_dev);
 	sdio_cmux_inited = 1;
 	D("SDIO Control MUX Driver Initialized.\n");
+	mutex_unlock(&probe_lock);
 	return 0;
 
 error2:
@@ -768,6 +830,7 @@ error2:
 error1:
 	destroy_workqueue(sdio_cmux_wq);
 error0:
+	mutex_unlock(&probe_lock);
 	return r;
 }
 
@@ -775,13 +838,17 @@ static int sdio_cmux_remove(struct platform_device *pdev)
 {
 	int i;
 
-	for (i = 0; i < SDIO_CMUX_NUM_CHANNELS; ++i)
-		sdio_cmux_ch_clear_and_signal(i);
+	mutex_lock(&modem_reset_lock);
+	abort_tx = 1;
 
-	destroy_workqueue(sdio_cmux_wq);
-	destroy_workqueue(sdio_cdemux_wq);
-	sdio_close(sdio_qmi_chl);
+	for (i = 0; i < SDIO_CMUX_NUM_CHANNELS; ++i) {
+		mutex_lock(&logical_ch[i].lc_lock);
+		logical_ch[i].is_channel_reset = 1;
+		mutex_unlock(&logical_ch[i].lc_lock);
+		sdio_cmux_ch_clear_and_signal(i);
+	}
 	sdio_qmi_chl = NULL;
+	mutex_unlock(&modem_reset_lock);
 
 	return 0;
 }

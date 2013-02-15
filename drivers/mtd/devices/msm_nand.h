@@ -1,6 +1,6 @@
 /* drivers/mtd/devices/msm_nand.h
  *
- * Copyright (c) 2008-2010, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2008-2011, Code Aurora Forum. All rights reserved.
  * Copyright (C) 2007 Google, Inc.
  *
  * This software is licensed under the terms of the GNU General Public
@@ -41,6 +41,8 @@ extern unsigned long ebi2_register_base;
 #define MSM_NAND_SFLASHC_STATUS       MSM_NAND_REG(0x001C)
 #define MSM_NAND_DEV0_CFG0            MSM_NAND_REG(0x0020)
 #define MSM_NAND_DEV0_CFG1            MSM_NAND_REG(0x0024)
+#define MSM_NAND_DEV0_ECC_CFG	      MSM_NAND_REG(0x0028)
+#define MSM_NAND_DEV1_ECC_CFG	      MSM_NAND_REG(0x002C)
 #define MSM_NAND_DEV1_CFG0            MSM_NAND_REG(0x0030)
 #define MSM_NAND_DEV1_CFG1            MSM_NAND_REG(0x0034)
 #define MSM_NAND_SFLASHC_CMD          MSM_NAND_REG(0x0038)
@@ -79,6 +81,7 @@ extern unsigned long ebi2_register_base;
 #define MSM_NAND_SFLASHC_BURST_CFG    MSM_NAND_REG(0x00E0)
 #define MSM_NAND_ADDR6                MSM_NAND_REG(0x00E4)
 #define MSM_NAND_EBI2_ECC_BUF_CFG     MSM_NAND_REG(0x00F0)
+#define MSM_NAND_HW_INFO	      MSM_NAND_REG(0x00FC)
 #define MSM_NAND_FLASH_BUFFER         MSM_NAND_REG(0x0100)
 
 /* device commands */
@@ -185,7 +188,7 @@ extern unsigned long ebi2_register_base;
 #define EBI2_NAND_ADM_MUX       	EBI2_REG(0x005C)
 
 #define MSM_NAND_BUF_STAT_UNCRCTBL_ERR	(1 << 8)
-#define MSM_NAND_BUF_STAT_NUM_ERR_MASK	(0xf)
+#define MSM_NAND_BUF_STAT_NUM_ERR_MASK	(enable_bch_ecc ? 0x1F : 0x0F)
 
 extern struct flash_platform_data msm_nand_data;
 

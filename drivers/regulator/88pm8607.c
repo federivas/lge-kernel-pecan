@@ -215,7 +215,7 @@ static int pm8607_list_voltage(struct regulator_dev *rdev, unsigned index)
 	struct pm8607_regulator_info *info = rdev_get_drvdata(rdev);
 	int ret = -EINVAL;
 
-	if (info->vol_table && (index < (2 << info->vol_nbits))) {
+	if (info->vol_table && (index < (1 << info->vol_nbits))) {
 		ret = info->vol_table[index];
 		if (info->slope_double)
 			ret <<= 1;
@@ -233,7 +233,7 @@ static int choose_voltage(struct regulator_dev *rdev, int min_uV, int max_uV)
 		max_uV = max_uV >> 1;
 	}
 	if (info->vol_table) {
-		for (i = 0; i < (2 << info->vol_nbits); i++) {
+		for (i = 0; i < (1 << info->vol_nbits); i++) {
 			if (!info->vol_table[i])
 				break;
 			if ((min_uV <= info->vol_table[i])
@@ -249,7 +249,7 @@ static int choose_voltage(struct regulator_dev *rdev, int min_uV, int max_uV)
 }
 
 static int pm8607_set_voltage(struct regulator_dev *rdev,
-			      int min_uV, int max_uV)
+			      int min_uV, int max_uV, unsigned *selector)
 {
 	struct pm8607_regulator_info *info = rdev_get_drvdata(rdev);
 	uint8_t val, mask;
@@ -263,6 +263,7 @@ static int pm8607_set_voltage(struct regulator_dev *rdev,
 	ret = choose_voltage(rdev, min_uV, max_uV);
 	if (ret < 0)
 		return -EINVAL;
+	*selector = ret;
 	val = (uint8_t)(ret << info->vol_shift);
 	mask = ((1 << info->vol_nbits) - 1)  << info->vol_shift;
 

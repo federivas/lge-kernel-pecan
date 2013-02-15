@@ -9,11 +9,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
- *
  */
 
 /*
@@ -72,16 +67,8 @@ int xdr_send_bytes(struct msm_rpc_xdr *xdr, const void **data,
 	void *buf = xdr->out_buf + xdr->out_index;
 	uint32_t temp;
 
-#if defined(CONFIG_MACH_MSM7X27_THUNDERC)
-	/* No match oem rapi rpc interface arm9 and arm11 when input(*data) arg is null only
-	 * This code is work around code
-	 * 2010-05-17, taehung.kim@lge.com
-	 */
-	if (!size || !data)
-#else
 	if (!size || !data || !*data)
-#endif
-			return -1;
+		return -1;
 
 	temp = *size;
 	if (temp & 0x3)

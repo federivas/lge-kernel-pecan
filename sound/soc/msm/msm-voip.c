@@ -32,15 +32,21 @@
 #include <sound/pcm.h>
 #include <sound/initval.h>
 #include <sound/control.h>
+#include <sound/q6asm.h>
+#include <sound/apr_audio.h>
 #include <mach/msm_rpcrouter.h>
-#include <mach/qdsp6v2/apr_audio.h>
-#include <mach/qdsp6v2/q6asm.h>
 #include <mach/qdsp6v2/q6voice.h>
 #include <mach/qdsp6v2/audio_dev_ctl.h>
 #include "msm_audio_mvs.h"
 
 
 static struct audio_voip_info_type audio_voip_info;
+static void audio_mvs_process_ul_pkt(uint8_t *voc_pkt,
+				uint32_t pkt_len,
+				void *private_data);
+static void audio_mvs_process_dl_pkt(uint8_t *voc_pkt,
+				uint32_t *pkt_len,
+				void *private_data);
 
 struct msm_audio_mvs_frame {
 	uint32_t frame_type;
@@ -107,15 +113,21 @@ static int msm_pcm_close(struct snd_pcm_substream *substream)
 	audio->instance--;
 	wake_up(&audio->out_wait);
 
+	if (substream->stream ==  SNDRV_PCM_STREAM_PLAYBACK)
+		audio->playback_state = AUDIO_MVS_CLOSED;
+	else if (substream->stream ==  SNDRV_PCM_STREAM_CAPTURE)
+		audio->capture_state = AUDIO_MVS_CLOSED;
 	if (!audio->instance) {
-		if (audio->state == AUDIO_MVS_ENABLED) {
-			audio->state = AUDIO_MVS_CLOSING;
-			/* Release MVS. */
-			release_msg.client_id = cpu_to_be32(MVS_CLIENT_ID_VOIP);
-		}
-		audio->state = AUDIO_MVS_CLOSED;
+		/* Release MVS. */
+		release_msg.client_id = cpu_to_be32(MVS_CLIENT_ID_VOIP);
 		/* Derigstering the callbacks with voice driver */
 		voice_register_mvs_cb(NULL, NULL, audio);
+	} else if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		voice_register_mvs_cb(audio_mvs_process_ul_pkt,
+			NULL, audio);
+	} else {
+		voice_register_mvs_cb(NULL, audio_mvs_process_dl_pkt,
+				audio);
 	}
 
 	mutex_unlock(&audio->lock);
@@ -156,12 +168,16 @@ static int msm_pcm_open(struct snd_pcm_substream *substream)
 			runtime->hw = msm_pcm_hardware;
 			audio_voip_info.in_read = 0;
 			audio_voip_info.in_write = 0;
+			if (audio->playback_state < AUDIO_MVS_OPENED)
+				audio->playback_state = AUDIO_MVS_OPENED;
 		} else if (substream->stream ==
 			SNDRV_PCM_STREAM_CAPTURE) {
 			audio->capture_substream = substream;
 			runtime->hw = msm_pcm_hardware;
 			audio_voip_info.out_read = 0;
 			audio_voip_info.out_write = 0;
+			if (audio->capture_state < AUDIO_MVS_OPENED)
+				audio->capture_state = AUDIO_MVS_OPENED;
 		}
 	} else {
 		ret  = -EPERM;
@@ -175,8 +191,6 @@ static int msm_pcm_open(struct snd_pcm_substream *substream)
 	}
 	audio->instance++;
 
-	if (audio->state < AUDIO_MVS_OPENED)
-		audio->state = AUDIO_MVS_OPENED;
 err:
 	mutex_unlock(&audio->lock);
 	return ret;
@@ -201,7 +215,7 @@ static int msm_pcm_playback_copy(struct snd_pcm_substream *substream, int a,
 		return  -ERESTARTSYS;
 	}
 
-	if (audio->state == AUDIO_MVS_ENABLED) {
+	if (audio->playback_state == AUDIO_MVS_ENABLED) {
 		index = audio->in_write % VOIP_MAX_Q_LEN;
 		count = frames_to_bytes(runtime, frames);
 		if (count == MVS_MAX_VOC_PKT_SIZE) {
@@ -221,7 +235,7 @@ static int msm_pcm_playback_copy(struct snd_pcm_substream *substream, int a,
 
 	} else {
 		pr_debug("%s:Write performed in invalid state %d\n",
-					__func__, audio->state);
+					__func__, audio->playback_state);
 		rc = -EINVAL;
 	}
 	return rc;
@@ -240,15 +254,15 @@ static int msm_pcm_capture_copy(struct snd_pcm_substream *substream,
 	pr_debug("%s\n", __func__);
 
 	/* Ensure the driver has been enabled. */
-	if (audio->state != AUDIO_MVS_ENABLED) {
+	if (audio->capture_state != AUDIO_MVS_ENABLED) {
 		pr_debug("%s:Read performed in invalid state %d\n",
-				__func__, audio->state);
+				__func__, audio->capture_state);
 		return -EPERM;
 	}
 	rc = wait_event_timeout(audio->out_wait,
 		((audio->out_read < audio->out_write) ||
-		(audio->state == AUDIO_MVS_CLOSING) ||
-		(audio->state == AUDIO_MVS_CLOSED)),
+		(audio->capture_state == AUDIO_MVS_CLOSING) ||
+		(audio->capture_state == AUDIO_MVS_CLOSED)),
 		1 * HZ);
 
 	if (rc < 0) {
@@ -256,8 +270,8 @@ static int msm_pcm_capture_copy(struct snd_pcm_substream *substream,
 		return  -ERESTARTSYS;
 	}
 
-	if (audio->state  == AUDIO_MVS_CLOSING
-		|| audio->state == AUDIO_MVS_CLOSED) {
+	if (audio->capture_state  == AUDIO_MVS_CLOSING
+		|| audio->capture_state == AUDIO_MVS_CLOSED) {
 		pr_debug("%s:EBUSY STATE\n", __func__);
 		rc = -EBUSY;
 	} else {
@@ -360,8 +374,13 @@ static int msm_pcm_prepare(struct snd_pcm_substream *substream)
 	pr_debug("%s:prtd->pcm_count:%d\n", __func__, prtd->pcm_count);
 
 	mutex_lock(&prtd->prepare_lock);
-	if (prtd->state == AUDIO_MVS_ENABLED)
-		goto enabled;
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		if (prtd->playback_state == AUDIO_MVS_ENABLED)
+			goto enabled;
+	} else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
+		if (prtd->capture_state == AUDIO_MVS_ENABLED)
+			goto enabled;
+	}
 
 	pr_debug("%s:Register cbs with voice driver check audio_mvs_driver\n",
 			__func__);
@@ -381,13 +400,14 @@ static int msm_pcm_prepare(struct snd_pcm_substream *substream)
 		}
 	}
 
-	prtd->state = AUDIO_MVS_ENABLED;
 enabled:
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		prtd->playback_state = AUDIO_MVS_ENABLED;
 		prtd->pcm_playback_irq_pos = 0;
 		prtd->pcm_playback_buf_pos = 0;
 		/* rate and channels are sent to audio driver */
 	} else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
+		prtd->capture_state = AUDIO_MVS_ENABLED;
 		prtd->pcm_capture_size  = snd_pcm_lib_buffer_bytes(substream);
 		prtd->pcm_capture_count = snd_pcm_lib_period_bytes(substream);
 		prtd->pcm_capture_irq_pos = 0;
@@ -430,7 +450,7 @@ static snd_pcm_uframes_t msm_pcm_pointer(struct snd_pcm_substream *substream)
 	return ret;
 }
 
-static struct snd_pcm_ops msm_voip_pcm_ops = {
+static struct snd_pcm_ops msm_mvs_pcm_ops = {
 	.open = msm_pcm_open,
 	.copy = msm_pcm_copy,
 	.close = msm_pcm_close,
@@ -440,21 +460,14 @@ static struct snd_pcm_ops msm_voip_pcm_ops = {
 	.pointer = msm_pcm_pointer,
 
 };
-static int msm_pcm_remove(struct platform_device *devptr)
-{
-	struct snd_soc_device *socdev = platform_get_drvdata(devptr);
-	snd_soc_free_pcms(socdev);
-	kfree(socdev->card->codec);
-	return 0;
-}
 
-static int msm_pcm_new(struct snd_card *card,
-			struct snd_soc_dai *codec_dai,
-			struct snd_pcm *pcm)
+static int msm_pcm_new(struct snd_soc_pcm_runtime *rtd)
 {
 	int   i, ret, offset = 0;
 	struct snd_pcm_substream *substream = NULL;
 	struct snd_dma_buffer *dma_buffer = NULL;
+	struct snd_card *card = rtd->card->snd_card;
+	struct snd_pcm *pcm = rtd->pcm;
 
 	ret = snd_pcm_new_stream(pcm, SNDRV_PCM_STREAM_PLAYBACK, 1);
 	if (ret)
@@ -462,8 +475,8 @@ static int msm_pcm_new(struct snd_card *card,
 	ret = snd_pcm_new_stream(pcm, SNDRV_PCM_STREAM_CAPTURE, 1);
 	if (ret)
 		return ret;
-	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &msm_voip_pcm_ops);
-	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, &msm_voip_pcm_ops);
+	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &msm_mvs_pcm_ops);
+	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, &msm_mvs_pcm_ops);
 
 	if (!card->dev->coherent_dma_mask)
 		card->dev->coherent_dma_mask = DMA_BIT_MASK(32);
@@ -543,16 +556,36 @@ static void msm_pcm_free_buffers(struct snd_pcm *pcm)
 	}
 }
 
-struct snd_soc_platform msm_voip_soc_platform = {
-	.name		= "msm-voip",
-	.remove		= msm_pcm_remove,
-	.pcm_ops	= &msm_voip_pcm_ops,
+struct snd_soc_platform_driver msm_mvs_soc_platform = {
+	.ops		= &msm_mvs_pcm_ops,
 	.pcm_new	= msm_pcm_new,
 	.pcm_free	= msm_pcm_free_buffers,
 };
-EXPORT_SYMBOL(msm_voip_soc_platform);
+EXPORT_SYMBOL(msm_mvs_soc_platform);
 
-static int __init msm_voip_soc_platform_init(void)
+static __devinit int msm_pcm_probe(struct platform_device *pdev)
+{
+	dev_info(&pdev->dev, "%s: dev name %s\n", __func__, dev_name(&pdev->dev));
+	return snd_soc_register_platform(&pdev->dev,
+				&msm_mvs_soc_platform);
+}
+
+static int msm_pcm_remove(struct platform_device *pdev)
+{
+	snd_soc_unregister_platform(&pdev->dev);
+	return 0;
+}
+
+static struct platform_driver msm_pcm_driver = {
+	.driver = {
+		.name = "msm-mvs-audio",
+		.owner = THIS_MODULE,
+	},
+	.probe = msm_pcm_probe,
+	.remove = __devexit_p(msm_pcm_remove),
+};
+
+static int __init msm_mvs_soc_platform_init(void)
 {
 	memset(&audio_voip_info, 0, sizeof(audio_voip_info));
 	mutex_init(&audio_voip_info.lock);
@@ -563,15 +596,15 @@ static int __init msm_voip_soc_platform_init(void)
 				"audio_mvs_suspend");
 	wake_lock_init(&audio_voip_info.idle_lock, WAKE_LOCK_IDLE,
 				"audio_mvs_idle");
-	return snd_soc_register_platform(&msm_voip_soc_platform);
+	return platform_driver_register(&msm_pcm_driver);
 }
-module_init(msm_voip_soc_platform_init);
+module_init(msm_mvs_soc_platform_init);
 
-static void __exit msm_voip_soc_platform_exit(void)
+static void __exit msm_mvs_soc_platform_exit(void)
 {
-	snd_soc_unregister_platform(&msm_voip_soc_platform);
+	 platform_driver_unregister(&msm_pcm_driver);
 }
-module_exit(msm_voip_soc_platform_exit);
+module_exit(msm_mvs_soc_platform_exit);
 
 MODULE_DESCRIPTION("MVS PCM module platform driver");
 MODULE_LICENSE("GPL v2");

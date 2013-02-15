@@ -9,11 +9,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
- *
  */
 /*
  * Qualcomm PMIC8058 Misc Device driver
@@ -27,6 +22,19 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/mfd/pmic8058.h>
+#include <linux/pmic8058-misc.h>
+
+/* VIB_DRV register */
+#define SSBI_REG_ADDR_DRV_VIB		0x4A
+
+#define PM8058_VIB_DRIVE_SHIFT		3
+#define PM8058_VIB_LOGIC_SHIFT		2
+#define PM8058_VIB_MIN_LEVEL_mV		1200
+#define PM8058_VIB_MAX_LEVEL_mV		3100
+
+/* COINCELL_CHG register */
+#define SSBI_REG_ADDR_COINCELL_CHG	(0x2F)
+#define PM8058_COINCELL_RESISTOR_SHIFT	(2)
 
 /* Resource offsets. */
 enum PM8058_MISC_IRQ {
@@ -39,6 +47,109 @@ struct pm8058_misc_device {
 	unsigned int		osc_halt_irq;
 	u64			osc_halt_count;
 };
+
+static struct pm8058_misc_device *misc_dev;
+
+int pm8058_vibrator_config(struct pm8058_vib_config *vib_config)
+{
+	u8 reg = 0;
+	int rc;
+
+	if (misc_dev == NULL) {
+		pr_info("misc_device is NULL\n");
+		return -EINVAL;
+	}
+
+	if (vib_config->drive_mV) {
+		if (vib_config->drive_mV < PM8058_VIB_MIN_LEVEL_mV ||
+			vib_config->drive_mV > PM8058_VIB_MAX_LEVEL_mV) {
+			pr_err("Invalid vibrator drive strength\n");
+			return -EINVAL;
+		}
+	}
+
+	reg = (vib_config->drive_mV / 100) << PM8058_VIB_DRIVE_SHIFT;
+
+	reg |= (!!vib_config->active_low) << PM8058_VIB_LOGIC_SHIFT;
+
+	reg |= vib_config->enable_mode;
+
+	rc = pm8058_write(misc_dev->pm_chip, SSBI_REG_ADDR_DRV_VIB, &reg, 1);
+	if (rc)
+		pr_err("%s: pm8058 write failed: rc=%d\n", __func__, rc);
+
+	return rc;
+}
+EXPORT_SYMBOL(pm8058_vibrator_config);
+
+/**
+ * pm8058_coincell_chg_config - Disables or enables the coincell charger, and
+ *				configures its voltage and resistor settings.
+ * @chg_config:			Holds both voltage and resistor values, and a
+ *				switch to change the state of charger.
+ *				If state is to disable the charger then
+ *				both voltage and resistor are disregarded.
+ *
+ * RETURNS: an appropriate -ERRNO error value on error, or zero for success.
+ */
+int pm8058_coincell_chg_config(struct pm8058_coincell_chg_config *chg_config)
+{
+	u8 reg, voltage, resistor;
+	int rc;
+
+	reg = 0;
+	voltage = 0;
+	resistor = 0;
+	rc = 0;
+
+	if (misc_dev == NULL) {
+		pr_err("misc_device is NULL\n");
+		return -EINVAL;
+	}
+
+	if (chg_config == NULL) {
+		pr_err("chg_config is NULL\n");
+		return -EINVAL;
+	}
+
+	if (chg_config->state == PM8058_COINCELL_CHG_DISABLE) {
+		rc = pm8058_write(misc_dev->pm_chip,
+				SSBI_REG_ADDR_COINCELL_CHG, &reg, 1);
+		if (rc)
+			pr_err("%s: pm8058 write failed: rc=%d\n",
+							__func__, rc);
+		return rc;
+	}
+
+	voltage = chg_config->voltage;
+	resistor = chg_config->resistor;
+
+	if (voltage < PM8058_COINCELL_VOLTAGE_3p2V ||
+			(voltage > PM8058_COINCELL_VOLTAGE_3p0V &&
+				voltage != PM8058_COINCELL_VOLTAGE_2p5V)) {
+		pr_err("Invalid voltage value provided\n");
+		return -EINVAL;
+	}
+
+	if (resistor < PM8058_COINCELL_RESISTOR_2100_OHMS ||
+			resistor > PM8058_COINCELL_RESISTOR_800_OHMS) {
+		pr_err("Invalid resistor value provided\n");
+		return -EINVAL;
+	}
+
+	reg |= voltage;
+
+	reg |= (resistor << PM8058_COINCELL_RESISTOR_SHIFT);
+
+	rc = pm8058_write(misc_dev->pm_chip,
+			SSBI_REG_ADDR_COINCELL_CHG, &reg, 1);
+
+	if (rc)
+		pr_err("%s: pm8058 write failed: rc=%d\n", __func__, rc);
+
+	return rc;
+}
+EXPORT_SYMBOL(pm8058_coincell_chg_config);
 
 /* Handle the OSC_HALT interrupt: 32 kHz XTAL oscillator has stopped. */
 static irqreturn_t pm8058_osc_halt_isr(int irq, void *data)
@@ -176,6 +287,8 @@ static int __devinit pmic8058_misc_probe(struct platform_device *pdev)
 	rc = pmic8058_misc_dbg_probe(miscdev);
 	if (rc)
 		return rc;
+
+	misc_dev = miscdev;
 
 	pr_notice("%s: OK\n", __func__);
 	return 0;

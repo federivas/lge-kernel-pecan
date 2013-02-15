@@ -97,15 +97,6 @@ struct mddi_panel_info {
 	__u32 vdopkt;
 };
 
-/* DSI PHY configuration */
-struct mipi_dsi_phy_ctrl {
-	uint32 regulator[4];
-	uint32 timing[12];
-	uint32 ctrl[4];
-	uint32 strength[4];
-	uint32 pll[21];
-};
-
 struct mipi_panel_info {
 	char mode;		/* video/cmd */
 	char interleave_mode;
@@ -146,6 +137,14 @@ struct mipi_panel_info {
 	char mdp_trigger;
 	char dma_trigger;
 	uint32 dsi_pclk_rate;
+	/* The packet-size should not bet changed */
+	char fixed_packet_size;
+	/* Clock required during LP commands */
+	char force_clk_lane_hs;
+	/* Pad width */
+	uint32 xres_pad;
+	/* Pad height */
+	uint32 yres_pad;
 };
 
 struct msm_panel_info {
@@ -165,11 +164,12 @@ struct msm_panel_info {
 	__u32 clk_min;
 	__u32 clk_max;
 	__u32 frame_count;
+	__u32 is_3d_panel;
 
 
-		struct mddi_panel_info mddi;
-		struct lcd_panel_info lcd;
-		struct lcdc_panel_info lcdc;
+	struct mddi_panel_info mddi;
+	struct lcd_panel_info lcd;
+	struct lcdc_panel_info lcdc;
 
 	struct mipi_panel_info mipi;
 };

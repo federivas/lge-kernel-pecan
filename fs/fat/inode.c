@@ -14,7 +14,6 @@
 #include <linux/init.h>
 #include <linux/time.h>
 #include <linux/slab.h>
-#include <linux/smp_lock.h>
 #include <linux/seq_file.h>
 #include <linux/pagemap.h>
 #include <linux/mpage.h>
@@ -159,7 +158,7 @@ static int fat_write_begin(struct file *file, struct address_space *mapping,
 	int err;
 
 	*pagep = NULL;
-	err = cont_write_begin_newtrunc(file, mapping, pos, len, flags,
+	err = cont_write_begin(file, mapping, pos, len, flags,
 				pagep, fsdata, fat_get_block,
 				&MSDOS_I(mapping->host)->mmu_private);
 	if (err < 0)
@@ -212,8 +211,8 @@ static ssize_t fat_direct_IO(int rw, struct kiocb *iocb,
 	 * FAT need to use the DIO_LOCKING for avoiding the race
 	 * condition of fat_get_block() and ->truncate().
 	 */
-	ret = blockdev_direct_IO_newtrunc(rw, iocb, inode, inode->i_sb->s_bdev,
-				iov, offset, nr_segs, fat_get_block, NULL);
+	ret = blockdev_direct_IO(rw, iocb, inode, inode->i_sb->s_bdev,
+				 iov, offset, nr_segs, fat_get_block, NULL);
 	if (ret < 0 && (rw & WRITE))
 		fat_write_failed(mapping, offset + iov_length(iov, nr_segs));
 
@@ -263,7 +262,7 @@ static const struct address_space_operations fat_aops = {
  *			check if the location is still valid and retry if it
  *			isn't. Otherwise we do changes.
  *		5. Spinlock is used to protect hash/unhash/location check/lookup
- *		6. fat_clear_inode() unhashes the F-d-c entry.
+ *		6. fat_evict_inode() unhashes the F-d-c entry.
  *		7. lookup() and readdir() do igrab() if they find a F-d-c entry
  *			and consider negative result as cache miss.
  */
@@ -448,16 +447,15 @@ out:
 
 EXPORT_SYMBOL_GPL(fat_build_inode);
 
-static void fat_delete_inode(struct inode *inode)
+static void fat_evict_inode(struct inode *inode)
 {
 	truncate_inode_pages(&inode->i_data, 0);
-	inode->i_size = 0;
-	fat_truncate_blocks(inode, 0);
-	clear_inode(inode);
-}
-
-static void fat_clear_inode(struct inode *inode)
-{
+	if (!inode->i_nlink) {
+		inode->i_size = 0;
+		fat_truncate_blocks(inode, 0);
+	}
+	invalidate_inode_buffers(inode);
+	end_writeback(inode);
 	fat_cache_inval_inode(inode);
 	fat_detach(inode);
 }
@@ -490,8 +488,6 @@ static void fat_put_super(struct super_block *sb)
 {
 	struct msdos_sb_info *sbi = MSDOS_SB(sb);
 
-	lock_kernel();
-
 	if (sb->s_dirt)
 		fat_write_super(sb);
 
@@ -505,8 +501,6 @@ static void fat_put_super(struct super_block *sb)
 
 	sb->s_fs_info = NULL;
 	kfree(sbi);
-
-	unlock_kernel();
 }
 
 static struct kmem_cache *fat_inode_cachep;
@@ -520,9 +514,16 @@ static struct inode *fat_alloc_inode(struct super_block *sb)
 	return &ei->vfs_inode;
 }
 
+static void fat_i_callback(struct rcu_head *head)
+{
+	struct inode *inode = container_of(head, struct inode, i_rcu);
+	INIT_LIST_HEAD(&inode->i_dentry);
+	kmem_cache_free(fat_inode_cachep, MSDOS_I(inode));
+}
+
 static void fat_destroy_inode(struct inode *inode)
 {
-	kmem_cache_free(fat_inode_cachep, MSDOS_I(inode));
+	call_rcu(&inode->i_rcu, fat_i_callback);
 }
 
 static void init_once(void *foo)
@@ -674,12 +675,11 @@ static const struct super_operations fat_sops = {
 	.alloc_inode	= fat_alloc_inode,
 	.destroy_inode	= fat_destroy_inode,
 	.write_inode	= fat_write_inode,
-	.delete_inode	= fat_delete_inode,
+	.evict_inode	= fat_evict_inode,
 	.put_super	= fat_put_super,
 	.write_super	= fat_write_super,
 	.sync_fs	= fat_sync_fs,
 	.statfs		= fat_statfs,
-	.clear_inode	= fat_clear_inode,
 	.remount_fs	= fat_remount,
 
 	.show_options	= fat_show_options,
@@ -703,7 +703,6 @@ static struct dentry *fat_fh_to_dentry(struct super_block *sb,
 		struct fid *fid, int fh_len, int fh_type)
 {
 	struct inode *inode = NULL;
-	struct dentry *result;
 	u32 *fh = fid->raw;
 
 	if (fh_len < 5 || fh_type != 3)
@@ -748,10 +747,7 @@ static struct dentry *fat_fh_to_dentry(struct super_block *sb,
 	 * the fat_iget lookup again.  If that fails, then we are totally out
 	 * of luck.  But all that is for another day
 	 */
-	result = d_obtain_alias(inode);
-	if (!IS_ERR(result))
-		result->d_op = sb->s_root->d_op;
-	return result;
+	return d_obtain_alias(inode);
 }
 
 static int
@@ -799,8 +795,6 @@ static struct dentry *fat_get_parent(struct dentry *child)
 	brelse(bh);
 
 	parent = d_obtain_alias(inode);
-	if (!IS_ERR(parent))
-		parent->d_op = sb->s_root->d_op;
 out:
 	unlock_super(sb);
 
@@ -1244,7 +1238,8 @@ static int fat_read_root(struct inode *inode)
  * Read the super block of an MS-DOS FS.
  */
 int fat_fill_super(struct super_block *sb, void *data, int silent,
-		   const struct inode_operations *fs_dir_inode_ops, int isvfat)
+		   const struct inode_operations *fs_dir_inode_ops, int isvfat,
+		   void (*setup)(struct super_block *))
 {
 	struct inode *root_inode = NULL, *fat_inode = NULL;
 	struct buffer_head *bh;
@@ -1280,6 +1275,8 @@ int fat_fill_super(struct super_block *sb, void *data, int silent,
 	error = parse_options(data, isvfat, silent, &debug, &sbi->options);
 	if (error)
 		goto out_fail;
+
+	setup(sb); /* flavour-specific stuff that needs options */
 
 	error = -EIO;
 	sb_min_blocksize(sb, 512);

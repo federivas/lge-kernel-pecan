@@ -142,6 +142,7 @@ struct rtc_tod_args {
 	struct rtc_time *tm;
 };
 
+#ifdef CONFIG_PM
 struct suspend_state_info {
 	atomic_t state;
 	int64_t tick_at_suspend;
@@ -149,23 +150,33 @@ struct suspend_state_info {
 
 static struct suspend_state_info suspend_state = {ATOMIC_INIT(0), 0};
 
-bool msmrtc_is_suspended(void)
+void msmrtc_updateatsuspend(struct timespec *ts)
 {
-	return atomic_read(&suspend_state.state) ? true : false;
-}
-EXPORT_SYMBOL(msmrtc_is_suspended);
+	int64_t now, sleep, sclk_max;
 
-int64_t msmrtc_get_tickatsuspend(void)
-{
-	return suspend_state.tick_at_suspend;
-}
-EXPORT_SYMBOL(msmrtc_get_tickatsuspend);
+	if (atomic_read(&suspend_state.state)) {
+		now = msm_timer_get_sclk_time(&sclk_max);
 
-void msmrtc_set_tickatsuspend(int64_t now)
-{
-	suspend_state.tick_at_suspend = now;
+		if (now && suspend_state.tick_at_suspend) {
+			if (now < suspend_state.tick_at_suspend) {
+				sleep = sclk_max -
+					suspend_state.tick_at_suspend + now;
+			} else
+				sleep = now - suspend_state.tick_at_suspend;
+
+			timespec_add_ns(ts, sleep);
+			suspend_state.tick_at_suspend = now;
+		} else
+			pr_err("%s: Invalid ticks from SCLK now=%lld"
+				"tick_at_suspend=%lld", __func__, now,
+				suspend_state.tick_at_suspend);
+	}
+
 }
-EXPORT_SYMBOL(msmrtc_set_tickatsuspend);
+#else
+void msmrtc_updateatsuspend(struct timespec *ts) { }
+#endif
+EXPORT_SYMBOL(msmrtc_updateatsuspend);
 
 static int msmrtc_tod_proc_args(struct msm_rpc_client *client, void *buff,
 							void *data)
@@ -421,17 +432,6 @@ static struct rtc_class_ops msm_rtc_ops_secure = {
 };
 #endif
 
-static void
-msmrtc_alarmtimer_expired(unsigned long _data,
-				struct msm_rtc *rtc_pdata)
-{
-	pr_debug("%s: Generating alarm event (src %lu)\n",
-	       rtc_pdata->rtc->name, _data);
-
-	rtc_update_irq(rtc_pdata->rtc, 1, RTC_IRQF | RTC_AF);
-	rtc_pdata->rtcalarm_time = 0;
-}
-
 static void process_cb_request(void *buffer)
 {
 	struct rtc_cb_recv *rtc_cb = buffer;
@@ -456,28 +456,7 @@ static void process_cb_request(void *buffer)
 			rtc_cb->cb_info_data.tod_update.freq);
 
 		getnstimeofday(&ts);
-		if (atomic_read(&suspend_state.state)) {
-			int64_t now, sleep, sclk_max;
-			now = msm_timer_get_sclk_time(&sclk_max);
-
-			if (now && suspend_state.tick_at_suspend) {
-				if (now < suspend_state.tick_at_suspend) {
-					sleep = sclk_max -
-						suspend_state.tick_at_suspend
-						+ now;
-				} else {
-					sleep = now -
-						suspend_state.tick_at_suspend;
-				}
-
-				timespec_add_ns(&ts, sleep);
-				suspend_state.tick_at_suspend = now;
-			} else
-				pr_err("%s: Invalid ticks from SCLK"
-					"now=%lld tick_at_suspend=%lld",
-					__func__, now,
-					suspend_state.tick_at_suspend);
-		}
+		msmrtc_updateatsuspend(&ts);
 		rtc_hctosys();
 		getnstimeofday(&tv);
 		/* Update the alarm information with the new time info. */
@@ -706,6 +685,18 @@ fail_cb_setup:
 
 
 #ifdef CONFIG_PM
+
+static void
+msmrtc_alarmtimer_expired(unsigned long _data,
+				struct msm_rtc *rtc_pdata)
+{
+	pr_debug("%s: Generating alarm event (src %lu)\n",
+	       rtc_pdata->rtc->name, _data);
+
+	rtc_update_irq(rtc_pdata->rtc, 1, RTC_IRQF | RTC_AF);
+	rtc_pdata->rtcalarm_time = 0;
+}
+
 static int
 msmrtc_suspend(struct platform_device *dev, pm_message_t state)
 {

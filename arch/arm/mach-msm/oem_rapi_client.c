@@ -9,11 +9,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
- *
  */
 
 /*
@@ -165,12 +160,7 @@ static int oem_rapi_client_streaming_function_ret(struct msm_rpc_client *client,
 			 xdr_recv_uint32);
 
 	/* output */
-	/* LGE_CHANGE
-	 * ret->output is allocated in xdr_recv_bytes()
-	 * So we dont check that ret->output buffer is NULL
-	 * 2010-06-05,taehung.kim@lge.com
-	 */
-	if (ret->out_len && *ret->out_len /*&&ret->output*/)
+	if (ret->out_len && *ret->out_len)
 		xdr_recv_bytes(xdr, (void **)&ret->output, &temp);
 
 	return 0;

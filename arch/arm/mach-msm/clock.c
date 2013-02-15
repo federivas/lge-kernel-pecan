@@ -15,94 +15,157 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/list.h>
 #include <linux/err.h>
 #include <linux/spinlock.h>
-#include <linux/pm_qos_params.h>
+#include <linux/string.h>
+#include <linux/module.h>
 #include <linux/clk.h>
-
-#include <asm/clkdev.h>
-
-#include <mach/socinfo.h>
+#include <linux/clkdev.h>
 
 #include "clock.h"
-
-static DEFINE_MUTEX(clocks_mutex);
-static DEFINE_SPINLOCK(ebi1_vote_lock);
-static LIST_HEAD(clocks);
-
-static struct notifier_block axi_freq_notifier_block;
 
 /*
  * Standard clock functions defined in include/linux/clk.h
  */
 int clk_enable(struct clk *clk)
 {
-	return clk->ops->enable(clk->id);
+	int ret = 0;
+	unsigned long flags;
+	struct clk *parent;
+
+	if (!clk)
+		return 0;
+
+	spin_lock_irqsave(&clk->lock, flags);
+	if (clk->count == 0) {
+		parent = clk_get_parent(clk);
+		ret = clk_enable(parent);
+		if (ret)
+			goto out;
+		ret = clk_enable(clk->depends);
+		if (ret) {
+			clk_disable(parent);
+			goto out;
+		}
+
+		if (clk->ops->enable)
+			ret = clk->ops->enable(clk);
+		if (ret) {
+			clk_disable(clk->depends);
+			clk_disable(parent);
+			goto out;
+		}
+	} else if (clk->flags & CLKFLAG_HANDOFF_RATE) {
+		/*
+		 * The clock was already enabled by handoff code so there is no
+		 * need to enable it again here. Clearing the handoff flag will
+		 * prevent the lateinit handoff code from disabling the clock if
+		 * a client driver still has it enabled.
+		 */
+		clk->flags &= ~CLKFLAG_HANDOFF_RATE;
+		goto out;
+	}
+	clk->count++;
+out:
+	spin_unlock_irqrestore(&clk->lock, flags);
+
+	return ret;
 }
 EXPORT_SYMBOL(clk_enable);
 
 void clk_disable(struct clk *clk)
 {
-	clk->ops->disable(clk->id);
+	unsigned long flags;
+	struct clk *parent;
+
+	if (!clk)
+		return;
+
+	spin_lock_irqsave(&clk->lock, flags);
+	if (WARN(clk->count == 0, "%s is unbalanced", clk->dbg_name))
+		goto out;
+	if (clk->count == 1) {
+		if (clk->ops->disable)
+			clk->ops->disable(clk);
+		clk_disable(clk->depends);
+		parent = clk_get_parent(clk);
+		clk_disable(parent);
+	}
+	clk->count--;
+out:
+	spin_unlock_irqrestore(&clk->lock, flags);
 }
 EXPORT_SYMBOL(clk_disable);
 
 int clk_reset(struct clk *clk, enum clk_reset_action action)
 {
-	int ret = -EPERM;
+	if (!clk->ops->reset)
+		return -ENOSYS;
 
-	/* Try clk->ops->reset() and fallback to a remote reset if it fails. */
-	if (clk->ops->reset != NULL)
-		ret = clk->ops->reset(clk->id, action);
-	if (ret == -EPERM && clk_ops_remote.reset != NULL)
-		ret = clk_ops_remote.reset(clk->remote_id, action);
-
-	return ret;
+	return clk->ops->reset(clk, action);
 }
 EXPORT_SYMBOL(clk_reset);
 
 unsigned long clk_get_rate(struct clk *clk)
 {
-	return clk->ops->get_rate(clk->id);
+	if (!clk->ops->get_rate)
+		return 0;
+
+	return clk->ops->get_rate(clk);
 }
 EXPORT_SYMBOL(clk_get_rate);
 
 int clk_set_rate(struct clk *clk, unsigned long rate)
 {
-	return clk->ops->set_rate(clk->id, rate);
+	if (!clk->ops->set_rate)
+		return -ENOSYS;
+
+	return clk->ops->set_rate(clk, rate);
 }
 EXPORT_SYMBOL(clk_set_rate);
 
 long clk_round_rate(struct clk *clk, unsigned long rate)
 {
-	return clk->ops->round_rate(clk->id, rate);
+	if (!clk->ops->round_rate)
+		return -ENOSYS;
+
+	return clk->ops->round_rate(clk, rate);
 }
 EXPORT_SYMBOL(clk_round_rate);
 
 int clk_set_min_rate(struct clk *clk, unsigned long rate)
 {
-	return clk->ops->set_min_rate(clk->id, rate);
+	if (!clk->ops->set_min_rate)
+		return -ENOSYS;
+
+	return clk->ops->set_min_rate(clk, rate);
 }
 EXPORT_SYMBOL(clk_set_min_rate);
 
 int clk_set_max_rate(struct clk *clk, unsigned long rate)
 {
-	return clk->ops->set_max_rate(clk->id, rate);
+	if (!clk->ops->set_max_rate)
+		return -ENOSYS;
+
+	return clk->ops->set_max_rate(clk, rate);
 }
 EXPORT_SYMBOL(clk_set_max_rate);
 
 int clk_set_parent(struct clk *clk, struct clk *parent)
 {
-	if (clk->ops->set_parent)
-		return clk->ops->set_parent(clk->id, parent);
-	return -ENOSYS;
+	if (!clk->ops->set_parent)
+		return 0;
+
+	return clk->ops->set_parent(clk, parent);
 }
 EXPORT_SYMBOL(clk_set_parent);
 
 struct clk *clk_get_parent(struct clk *clk)
 {
-	return ERR_PTR(-ENOSYS);
+	if (!clk->ops->get_parent)
+		return NULL;
+
+	return clk->ops->get_parent(clk);
 }
 EXPORT_SYMBOL(clk_get_parent);
 
@@ -110,130 +173,82 @@ int clk_set_flags(struct clk *clk, unsigned long flags)
 {
 	if (clk == NULL || IS_ERR(clk))
 		return -EINVAL;
-	return clk->ops->set_flags(clk->id, flags);
+	if (!clk->ops->set_flags)
+		return -ENOSYS;
+
+	return clk->ops->set_flags(clk, flags);
 }
 EXPORT_SYMBOL(clk_set_flags);
 
-/* EBI1 is the only shared clock that several clients want to vote on as of
- * this commit. If this changes in the future, then it might be better to
- * make clk_min_rate handle the voting or make ebi1_clk_set_min_rate more
- * generic to support different clocks.
- */
-static unsigned long ebi1_min_rate[CLKVOTE_MAX];
-static struct clk *ebi1_clk;
+static struct clock_init_data __initdata *clk_init_data;
 
-/* Rate is in Hz to be consistent with the other clk APIs. */
-int ebi1_clk_set_min_rate(enum clkvote_client client, unsigned long rate)
-{
-	static unsigned long last_set_val = -1;
-	unsigned long new_val;
-	unsigned long flags;
-	int ret = 0, i;
-
-	spin_lock_irqsave(&ebi1_vote_lock, flags);
-
-	ebi1_min_rate[client] = (rate == MSM_AXI_MAX_FREQ) ?
-				(clk_get_max_axi_khz() * 1000) : rate;
-
-	new_val = ebi1_min_rate[0];
-	for (i = 1; i < CLKVOTE_MAX; i++)
-		if (ebi1_min_rate[i] > new_val)
-			new_val = ebi1_min_rate[i];
-
-	/* This check is to save a proc_comm call. */
-	if (last_set_val != new_val) {
-		ret = clk_set_min_rate(ebi1_clk, new_val);
-		if (ret < 0) {
-			pr_err("Setting EBI1 min rate to %lu Hz failed!\n",
-				new_val);
-			pr_err("Last successful value was %lu Hz.\n",
-				last_set_val);
-		} else {
-			last_set_val = new_val;
-		}
-	}
-
-	spin_unlock_irqrestore(&ebi1_vote_lock, flags);
-
-	return ret;
-}
-
-static int axi_freq_notifier_handler(struct notifier_block *block,
-				unsigned long min_freq, void *v)
-{
-	/* convert min_freq from KHz to Hz, unless it's a magic value */
-	if (min_freq != MSM_AXI_MAX_FREQ)
-		min_freq *= 1000;
-
-	switch (socinfo_get_msm_cpu()) {
-	case MSM_CPU_7X30:
-	case MSM_CPU_8X55:
-		/* On 7x30/8x55, ebi1_clk votes are dropped during power
-		 * collapse, but pbus_clk votes are not. Use pbus_clk to
-		 * implicitly request ebi1 and AXI rates. */
-		return clk_set_min_rate(ebi1_clk, min_freq);
-	case MSM_CPU_8X60:
-		/* The bus driver handles ebi1_clk requests on 8x60. */
-		return 0;
-	default:
-		/* Update pm_qos vote for ebi1_clk. */
-		return ebi1_clk_set_min_rate(CLKVOTE_PMQOS, min_freq);
-	}
-}
-
-
-void __init msm_clock_init(struct clk_lookup *clock_tbl, unsigned num_clocks)
+void __init msm_clock_init(struct clock_init_data *data)
 {
 	unsigned n;
-	struct clk *clk;
+	struct clk_lookup *clock_tbl;
+	size_t num_clocks;
 
-	/* Do SoC-speficic clock init operations. */
-	msm_clk_soc_init();
+	clk_init_data = data;
+	if (clk_init_data->init)
+		clk_init_data->init();
 
-	mutex_lock(&clocks_mutex);
-	for (n = 0; n < num_clocks; n++) {
-		msm_clk_soc_set_ops(clock_tbl[n].clk);
-		clkdev_add(&clock_tbl[n]);
-		list_add_tail(&clock_tbl[n].clk->list, &clocks);
-	}
-	mutex_unlock(&clocks_mutex);
+	clock_tbl = data->table;
+	num_clocks = data->size;
 
 	for (n = 0; n < num_clocks; n++) {
-		clk = clock_tbl[n].clk;
-		if (clk->flags & CLKFLAG_VOTER) {
-			struct clk *agg_clk = clk_get(NULL, clk->aggregator);
-			BUG_ON(IS_ERR(agg_clk));
-
-			clk_set_parent(clk, agg_clk);
+		struct clk *clk = clock_tbl[n].clk;
+		struct clk *parent = clk_get_parent(clk);
+		clk_set_parent(clk, parent);
+		if (clk->ops->handoff && !(clk->flags & CLKFLAG_HANDOFF_RATE)) {
+			if (clk->ops->handoff(clk)) {
+				clk->flags |= CLKFLAG_HANDOFF_RATE;
+				clk_enable(clk);
+			}
 		}
 	}
 
-	ebi1_clk = clk_get(NULL, "ebi1_pm_qos_clk");
-	if (!cpu_is_msm8x60()) {
-		BUG_ON(IS_ERR(ebi1_clk));
-		clk_enable(ebi1_clk);
-	}
-
-	axi_freq_notifier_block.notifier_call = axi_freq_notifier_handler;
-	pm_qos_add_notifier(PM_QOS_SYSTEM_BUS_FREQ, &axi_freq_notifier_block);
+	clkdev_add_table(clock_tbl, num_clocks);
 }
 
-/* The bootloader and/or AMSS may have left various clocks enabled.
- * Disable any clocks that belong to us (CLKFLAG_AUTO_OFF) but have
- * not been explicitly enabled by a clk_enable() call.
+/*
+ * The bootloader and/or AMSS may have left various clocks enabled.
+ * Disable any clocks that have not been explicitly enabled by a
+ * clk_enable() call and don't have the CLKFLAG_SKIP_AUTO_OFF flag.
  */
 static int __init clock_late_init(void)
 {
-	struct clk *clk;
+	unsigned n, count = 0;
+	unsigned long flags;
+	int ret = 0;
 
-	clock_debug_init(&clocks);
-	mutex_lock(&clocks_mutex);
-	list_for_each_entry(clk, &clocks, list) {
+	clock_debug_init(clk_init_data);
+	for (n = 0; n < clk_init_data->size; n++) {
+		struct clk *clk = clk_init_data->table[n].clk;
+		bool handoff = false;
+
 		clock_debug_add(clk);
-		if (clk->flags & CLKFLAG_AUTO_OFF)
-			clk->ops->auto_off(clk->id);
+		if (!(clk->flags & CLKFLAG_SKIP_AUTO_OFF)) {
+			spin_lock_irqsave(&clk->lock, flags);
+			if (!clk->count && clk->ops->auto_off) {
+				count++;
+				clk->ops->auto_off(clk);
+			}
+			if (clk->flags & CLKFLAG_HANDOFF_RATE) {
+				clk->flags &= ~CLKFLAG_HANDOFF_RATE;
+				handoff = true;
+			}
+			spin_unlock_irqrestore(&clk->lock, flags);
+			/*
+			 * Calling clk_disable() outside the lock is safe since
+			 * it doesn't need to be atomic with the flag change.
+			 */
+			if (handoff)
+				clk_disable(clk);
+		}
 	}
-	mutex_unlock(&clocks_mutex);
-	return 0;
+	pr_info("clock_late_init() disabled %d unused clocks\n", count);
+	if (clk_init_data->late_init)
+		ret = clk_init_data->late_init();
+	return ret;
 }
 late_initcall(clock_late_init);

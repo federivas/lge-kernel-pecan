@@ -9,11 +9,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
- *
  */
 
 #include <linux/kernel.h>
@@ -25,7 +20,6 @@
 #include <linux/i2c.h>
 #include <linux/spi/spi.h>
 #include <linux/delay.h>
-#include <linux/mfd/tps65023.h>
 #include <linux/bma150.h>
 #include <linux/power_supply.h>
 #include <linux/clk.h>
@@ -59,9 +53,9 @@
 #include "devices.h"
 #include "timer.h"
 #include "msm-keypad-devices.h"
+#include "acpuclock.h"
 #include "pm.h"
 #include "proc_comm.h"
-#include <linux/msm_kgsl.h>
 #ifdef CONFIG_USB_ANDROID
 #include <linux/usb/android_composite.h>
 #endif
@@ -468,7 +462,6 @@ static struct android_pmem_platform_data android_pmem_adsp_pdata = {
 
 static struct android_pmem_platform_data android_pmem_smipool_pdata = {
 	.name = "pmem_smipool",
-	.start = MSM_PMEM_SMIPOOL_BASE,
 	.size = MSM_PMEM_SMIPOOL_SIZE,
 	.allocator_type = PMEM_ALLOCATORTYPE_BITMAP,
 	.cached = 0,
@@ -518,12 +511,12 @@ static int msm_fb_detect_panel(const char *name)
 {
 	int ret = -EPERM;
 
-	if (machine_is_qsd8x50_ffa() || machine_is_qsd8x50a_ffa()) {
+	if (machine_is_qsd8x50_ffa()) {
 		if (!strncmp(name, "mddi_toshiba_wvga_pt", 20))
 			ret = 0;
 		else
 			ret = -ENODEV;
-	} else if ((machine_is_qsd8x50_surf() || machine_is_qsd8x50a_surf())
+	} else if ((machine_is_qsd8x50_surf())
 			&& !strcmp(name, "lcdc_external"))
 		ret = 0;
 
@@ -696,7 +689,6 @@ static void msm_qsd_spi_gpio_release(void)
 
 static struct msm_spi_platform_data qsd_spi_pdata = {
 	.max_clock_speed = 19200000,
-	.clk_name = "spi_clk",
 	.gpio_config  = msm_qsd_spi_gpio_config,
 	.gpio_release = msm_qsd_spi_gpio_release,
 	.dma_config = msm_qsd_spi_dma_config,
@@ -711,7 +703,7 @@ static int mddi_toshiba_pmic_bl(int level)
 {
 	int ret = -EPERM;
 
-	if (machine_is_qsd8x50_ffa() || machine_is_qsd8x50a_ffa()) {
+	if (machine_is_qsd8x50_ffa()) {
 		ret = pmic_set_led_intensity(LED_LCD, level);
 
 		if (ret)
@@ -766,8 +758,7 @@ static int msm_fb_mddi_power_save(int on)
 
 	mddi_power_save_on = flag_on;
 
-	if (!flag_on && (machine_is_qsd8x50_ffa()
-				|| machine_is_qsd8x50a_ffa())) {
+	if (!flag_on && machine_is_qsd8x50_ffa()) {
 		gpio_set_value(MDDI_RST_OUT_GPIO, 0);
 		mdelay(1);
 	}
@@ -780,8 +771,7 @@ static int msm_fb_mddi_power_save(int on)
 	msm_fb_vreg_config("gp5", flag_on);
 	msm_fb_vreg_config("boost", flag_on);
 
-	if (flag_on && (machine_is_qsd8x50_ffa()
-			|| machine_is_qsd8x50a_ffa())) {
+	if (flag_on && machine_is_qsd8x50_ffa()) {
 		gpio_set_value(MDDI_RST_OUT_GPIO, 0);
 		mdelay(1);
 		gpio_set_value(MDDI_RST_OUT_GPIO, 1);
@@ -805,6 +795,7 @@ static struct mddi_platform_data mddi_pdata = {
 
 static struct msm_panel_common_pdata mdp_pdata = {
 	.gpio = 98,
+	.mdp_rev = MDP_REV_31,
 };
 
 static void __init msm_fb_add_devices(void)
@@ -1076,7 +1067,7 @@ static int bluetooth_power(int on)
 			return rc;
 		}
 
-		if (machine_is_qsd8x50_ffa() || machine_is_qsd8x50a_ffa()) {
+		if (machine_is_qsd8x50_ffa()) {
 			rc = msm_gpios_enable
 					(wlan_config_power_on,
 					 ARRAY_SIZE(wlan_config_power_on));
@@ -1092,12 +1083,12 @@ static int bluetooth_power(int on)
 		gpio_set_value(22, on); /* VDD_IO */
 		gpio_set_value(18, on); /* SYSRST */
 
-		if (machine_is_qsd8x50_ffa() || machine_is_qsd8x50a_ffa()) {
+		if (machine_is_qsd8x50_ffa()) {
 			gpio_set_value(138, 0); /* WLAN: CHIP_PWD */
 			gpio_set_value(113, on); /* WLAN */
 		}
 	} else {
-		if (machine_is_qsd8x50_ffa() || machine_is_qsd8x50a_ffa()) {
+		if (machine_is_qsd8x50_ffa()) {
 			gpio_set_value(138, on); /* WLAN: CHIP_PWD */
 			gpio_set_value(113, on); /* WLAN */
 		}
@@ -1121,7 +1112,7 @@ static int bluetooth_power(int on)
 			return rc;
 		}
 
-		if (machine_is_qsd8x50_ffa() || machine_is_qsd8x50a_ffa()) {
+		if (machine_is_qsd8x50_ffa()) {
 			rc = msm_gpios_enable
 					(wlan_config_power_off,
 					 ARRAY_SIZE(wlan_config_power_off));
@@ -1145,7 +1136,7 @@ static void __init bt_power_init(void)
 	struct vreg *vreg_bt;
 	int rc;
 
-	if (machine_is_qsd8x50_ffa() || machine_is_qsd8x50a_ffa()) {
+	if (machine_is_qsd8x50_ffa()) {
 		gpio_set_value(138, 0); /* WLAN: CHIP_PWD */
 		gpio_set_value(113, 0); /* WLAN */
 	}
@@ -1191,54 +1182,6 @@ exit:
 #define bt_power_init(x) do {} while (0)
 #endif
 
-static struct resource kgsl_resources[] = {
-       {
-		.name  = "kgsl_reg_memory",
-		.start = 0xA0000000,
-		.end = 0xA001ffff,
-		.flags = IORESOURCE_MEM,
-       },
-       {
-		.name = "kgsl_yamato_irq",
-		.start = INT_GRAPHICS,
-		.end = INT_GRAPHICS,
-		.flags = IORESOURCE_IRQ,
-       },
-};
-static struct kgsl_platform_data kgsl_pdata = {
-	.high_axi_3d = 128000, /* Max for 8K */
-	.max_grp2d_freq = 0,
-	.min_grp2d_freq = 0,
-	.set_grp2d_async = NULL,
-	.max_grp3d_freq = 0,
-	.min_grp3d_freq = 0,
-	.set_grp3d_async = NULL,
-	.imem_clk_name = "imem_clk",
-	.grp3d_clk_name = "grp_clk",
-	.grp2d0_clk_name = NULL,
-	.idle_timeout_3d = HZ/5,
-	.idle_timeout_2d = 0,
-#ifdef CONFIG_KGSL_PER_PROCESS_PAGE_TABLE
-	.pt_va_size = SZ_32M,
-	/* Maximum of 32 concurrent processes */
-	.pt_max_count = 32,
-#else
-	.pt_va_size = SZ_128M,
-	/* We only ever have one pagetable for everybody */
-	.pt_max_count = 1,
-#endif
-};
-
-static struct platform_device msm_device_kgsl = {
-       .name = "kgsl",
-       .id = -1,
-       .num_resources = ARRAY_SIZE(kgsl_resources),
-       .resource = kgsl_resources,
-	.dev = {
-		.platform_data = &kgsl_pdata,
-	},
-};
-
 static struct platform_device msm_device_pmic_leds = {
 	.name	= "pmic-leds",
 	.id	= -1,
@@ -1262,48 +1205,12 @@ static const struct msm_gpio tsif_gpios[] = {
 static struct msm_tsif_platform_data tsif_platform_data = {
 	.num_gpios = ARRAY_SIZE(tsif_gpios),
 	.gpios = tsif_gpios,
-	.tsif_clk = "tsif_clk",
-	.tsif_ref_clk = "tsif_ref_clk",
+	.tsif_clk = "core_clk",
+	.tsif_ref_clk = "ref_clk",
 };
 
 #endif /* defined(CONFIG_TSIF) || defined(CONFIG_TSIF_MODULE) */
 /* TSIF end   */
-
-#ifdef CONFIG_QSD_SVS
-#define TPS65023_MAX_DCDC1	1600
-#else
-#define TPS65023_MAX_DCDC1	CONFIG_QSD_PMIC_DEFAULT_DCDC1
-#endif
-
-static int qsd8x50_tps65023_set_dcdc1(int mVolts)
-{
-	int rc = 0;
-#ifdef CONFIG_QSD_SVS
-	rc = tps65023_set_dcdc1_level(mVolts);
-	/* By default the TPS65023 will be initialized to 1.225V.
-	 * So we can safely switch to any frequency within this
-	 * voltage even if the device is not probed/ready.
-	 */
-	if (rc == -ENODEV && mVolts <= CONFIG_QSD_PMIC_DEFAULT_DCDC1)
-		rc = 0;
-#else
-	/* Disallow frequencies not supported in the default PMIC
-	 * output voltage.
-	 */
-	if (mVolts > CONFIG_QSD_PMIC_DEFAULT_DCDC1)
-		rc = -EFAULT;
-#endif
-	return rc;
-}
-
-static struct msm_acpu_clock_platform_data qsd8x50_clock_data = {
-	.acpu_switch_time_us = 20,
-	.max_speed_delta_khz = 256000,
-	.vdd_switch_time_us = 62,
-	.max_vdd = TPS65023_MAX_DCDC1,
-	.acpu_set_vdd = qsd8x50_tps65023_set_dcdc1,
-};
-
 
 static void touchpad_gpio_release(void)
 {
@@ -1603,7 +1510,7 @@ static int config_camera_on_gpios(void)
 {
 	int vreg_en = 1;
 
-	if (machine_is_qsd8x50_ffa() || machine_is_qsd8x50a_ffa()) {
+	if (machine_is_qsd8x50_ffa()) {
 		config_gpio_table(camera_on_gpio_ffa_table,
 		ARRAY_SIZE(camera_on_gpio_ffa_table));
 
@@ -1619,7 +1526,7 @@ static void config_camera_off_gpios(void)
 {
 	int vreg_en = 0;
 
-	if (machine_is_qsd8x50_ffa() || machine_is_qsd8x50a_ffa()) {
+	if (machine_is_qsd8x50_ffa()) {
 		config_gpio_table(camera_off_gpio_ffa_table,
 		ARRAY_SIZE(camera_off_gpio_ffa_table));
 
@@ -1889,6 +1796,9 @@ static struct platform_device *devices[] __initdata = {
 #ifdef CONFIG_USB_ANDROID_DIAG
 	&usb_diag_device,
 #endif
+#ifdef CONFIG_USB_F_SERIAL
+	&usb_gadget_fserial_device,
+#endif
 	&android_usb_device,
 #endif
 	&msm_device_tssc,
@@ -1902,7 +1812,7 @@ static struct platform_device *devices[] __initdata = {
 	&msm_device_uart3,
 #endif
 	&msm_device_pmic_leds,
-	&msm_device_kgsl,
+	&msm_kgsl_3d0,
 	&hs_device,
 #if defined(CONFIG_TSIF) || defined(CONFIG_TSIF_MODULE)
 	&msm_device_tsif,
@@ -2053,7 +1963,7 @@ static void __init qsd8x50_init_usb(void)
 	platform_device_register(&msm_device_gadget_peripheral);
 #endif
 
-	if (machine_is_qsd8x50_ffa() || machine_is_qsd8x50a_ffa())
+	if (machine_is_qsd8x50_ffa())
 		return;
 
 	vreg_usb = vreg_get(NULL, "boost");
@@ -2216,7 +2126,7 @@ static int msm_sdcc_get_wpswitch(struct device *dv)
 	uint32_t ret = 0;
 	struct platform_device *pdev;
 
-	if (!(machine_is_qsd8x50_surf() || machine_is_qsd8x50a_surf()))
+	if (!machine_is_qsd8x50_surf())
 		return -1;
 
 	pdev = container_of(dv, struct platform_device, dev);
@@ -2242,9 +2152,6 @@ static struct mmc_platform_data qsd8x50_sdc1_data = {
 	.translate_vdd	= msm_sdcc_setup_power,
 	.mmc_bus_width  = MMC_CAP_4_BIT_DATA,
 	.wpswitch	= msm_sdcc_get_wpswitch,
-#ifdef CONFIG_MMC_MSM_SDC1_DUMMY52_REQUIRED
-	.dummy52_required = 1,
-#endif
 	.msmsdcc_fmin	= 144000,
 	.msmsdcc_fmid	= 25000000,
 	.msmsdcc_fmax	= 49152000,
@@ -2258,9 +2165,6 @@ static struct mmc_platform_data qsd8x50_sdc2_data = {
 	.translate_vdd  = msm_sdcc_setup_power,
 	.mmc_bus_width  = MMC_CAP_4_BIT_DATA,
 	.wpswitch	= msm_sdcc_get_wpswitch,
-#ifdef CONFIG_MMC_MSM_SDC2_DUMMY52_REQUIRED
-	.dummy52_required = 1,
-#endif
 	.msmsdcc_fmin	= 144000,
 	.msmsdcc_fmid	= 25000000,
 	.msmsdcc_fmax	= 49152000,
@@ -2277,9 +2181,6 @@ static struct mmc_platform_data qsd8x50_sdc3_data = {
 #else
 	.mmc_bus_width  = MMC_CAP_4_BIT_DATA,
 #endif
-#ifdef CONFIG_MMC_MSM_SDC3_DUMMY52_REQUIRED
-	.dummy52_required = 1,
-#endif
 	.msmsdcc_fmin	= 144000,
 	.msmsdcc_fmid	= 25000000,
 	.msmsdcc_fmax	= 49152000,
@@ -2293,9 +2194,6 @@ static struct mmc_platform_data qsd8x50_sdc4_data = {
 	.translate_vdd  = msm_sdcc_setup_power,
 	.mmc_bus_width  = MMC_CAP_4_BIT_DATA,
 	.wpswitch	= msm_sdcc_get_wpswitch,
-#ifdef CONFIG_MMC_MSM_SDC4_DUMMY52_REQUIRED
-	.dummy52_required = 1,
-#endif
 	.msmsdcc_fmin	= 144000,
 	.msmsdcc_fmid	= 25000000,
 	.msmsdcc_fmax	= 49152000,
@@ -2305,7 +2203,7 @@ static struct mmc_platform_data qsd8x50_sdc4_data = {
 
 static void __init qsd8x50_init_mmc(void)
 {
-	if (machine_is_qsd8x50_ffa() || machine_is_qsd8x50a_ffa())
+	if (machine_is_qsd8x50_ffa())
 		vreg_mmc = vreg_get(NULL, "gp6");
 	else
 		vreg_mmc = vreg_get(NULL, "gp5");
@@ -2320,7 +2218,7 @@ static void __init qsd8x50_init_mmc(void)
 	msm_add_sdcc(1, &qsd8x50_sdc1_data);
 #endif
 
-	if (machine_is_qsd8x50_surf() || machine_is_qsd8x50a_surf()) {
+	if (machine_is_qsd8x50_surf()) {
 #ifdef CONFIG_MMC_MSM_SDC2_SUPPORT
 		msm_add_sdcc(2, &qsd8x50_sdc2_data);
 #endif
@@ -2338,12 +2236,12 @@ static void __init qsd8x50_cfg_smc91x(void)
 {
 	int rc = 0;
 
-	if (machine_is_qsd8x50_surf() || machine_is_qsd8x50a_surf()) {
+	if (machine_is_qsd8x50_surf()) {
 		smc91x_resources[0].start = 0x70000300;
 		smc91x_resources[0].end = 0x700003ff;
 		smc91x_resources[1].start = MSM_GPIO_TO_INT(156);
 		smc91x_resources[1].end = MSM_GPIO_TO_INT(156);
-	} else if (machine_is_qsd8x50_ffa() || machine_is_qsd8x50a_ffa()) {
+	} else if (machine_is_qsd8x50_ffa()) {
 		smc91x_resources[0].start = 0x84000300;
 		smc91x_resources[0].end = 0x840003ff;
 		smc91x_resources[1].start = MSM_GPIO_TO_INT(87);
@@ -2361,30 +2259,41 @@ static void __init qsd8x50_cfg_smc91x(void)
 }
 
 static struct msm_pm_platform_data msm_pm_data[MSM_PM_SLEEP_MODE_NR] = {
-	[MSM_PM_SLEEP_MODE_POWER_COLLAPSE].supported = 1,
-	[MSM_PM_SLEEP_MODE_POWER_COLLAPSE].suspend_enabled = 1,
-	[MSM_PM_SLEEP_MODE_POWER_COLLAPSE].idle_enabled = 1,
-	[MSM_PM_SLEEP_MODE_POWER_COLLAPSE].latency = 8594,
-	[MSM_PM_SLEEP_MODE_POWER_COLLAPSE].residency = 23740,
+	[MSM_PM_SLEEP_MODE_POWER_COLLAPSE] = {
+		.idle_supported = 1,
+		.suspend_supported = 1,
+		.idle_enabled = 1,
+		.suspend_enabled = 1,
+		.latency = 8594,
+		.residency = 23740,
+	},
 
-	[MSM_PM_SLEEP_MODE_POWER_COLLAPSE_NO_XO_SHUTDOWN].supported = 1,
-	[MSM_PM_SLEEP_MODE_POWER_COLLAPSE_NO_XO_SHUTDOWN].suspend_enabled = 1,
-	[MSM_PM_SLEEP_MODE_POWER_COLLAPSE_NO_XO_SHUTDOWN].idle_enabled = 1,
-	[MSM_PM_SLEEP_MODE_POWER_COLLAPSE_NO_XO_SHUTDOWN].latency = 4594,
-	[MSM_PM_SLEEP_MODE_POWER_COLLAPSE_NO_XO_SHUTDOWN].residency = 23740,
+	[MSM_PM_SLEEP_MODE_POWER_COLLAPSE_NO_XO_SHUTDOWN] = {
+		.idle_supported = 1,
+		.suspend_supported = 1,
+		.idle_enabled = 1,
+		.suspend_enabled = 1,
+		.latency = 4594,
+		.residency = 23740,
+	},
 
-	[MSM_PM_SLEEP_MODE_RAMP_DOWN_AND_WAIT_FOR_INTERRUPT].supported = 1,
-	[MSM_PM_SLEEP_MODE_RAMP_DOWN_AND_WAIT_FOR_INTERRUPT].suspend_enabled
-		= 1,
-	[MSM_PM_SLEEP_MODE_RAMP_DOWN_AND_WAIT_FOR_INTERRUPT].idle_enabled = 0,
-	[MSM_PM_SLEEP_MODE_RAMP_DOWN_AND_WAIT_FOR_INTERRUPT].latency = 443,
-	[MSM_PM_SLEEP_MODE_RAMP_DOWN_AND_WAIT_FOR_INTERRUPT].residency = 1098,
+	[MSM_PM_SLEEP_MODE_RAMP_DOWN_AND_WAIT_FOR_INTERRUPT] = {
+		.idle_supported = 1,
+		.suspend_supported = 1,
+		.idle_enabled = 0,
+		.suspend_enabled = 1,
+		.latency = 443,
+		.residency = 1098,
+	},
 
-	[MSM_PM_SLEEP_MODE_WAIT_FOR_INTERRUPT].supported = 1,
-	[MSM_PM_SLEEP_MODE_WAIT_FOR_INTERRUPT].suspend_enabled = 1,
-	[MSM_PM_SLEEP_MODE_WAIT_FOR_INTERRUPT].idle_enabled = 1,
-	[MSM_PM_SLEEP_MODE_WAIT_FOR_INTERRUPT].latency = 2,
-	[MSM_PM_SLEEP_MODE_WAIT_FOR_INTERRUPT].residency = 0,
+	[MSM_PM_SLEEP_MODE_WAIT_FOR_INTERRUPT] = {
+		.idle_supported = 1,
+		.suspend_supported = 1,
+		.idle_enabled = 1,
+		.suspend_enabled = 1,
+		.latency = 2,
+		.residency = 0,
+	},
 };
 
 static void
@@ -2492,12 +2401,9 @@ early_param("audio_size", audio_size_setup);
 
 static void __init qsd8x50_init(void)
 {
-	if (socinfo_init() < 0)
-		printk(KERN_ERR "%s: socinfo_init() failed!\n",
-		       __func__);
-	msm_clock_init(msm_clocks_8x50, msm_num_clocks_8x50);
+	msm_clock_init(&qds8x50_clock_init_data);
 	qsd8x50_cfg_smc91x();
-	msm_acpu_clock_init(&qsd8x50_clock_data);
+	acpuclk_init(&acpuclk_8x50_soc_data);
 
 	msm_hsusb_pdata.swfi_latency =
 		msm_pm_data
@@ -2532,7 +2438,7 @@ static void __init qsd8x50_init(void)
 	msm_pm_set_platform_data(msm_pm_data, ARRAY_SIZE(msm_pm_data));
 
 #ifdef CONFIG_SURF_FFA_GPIO_KEYPAD
-	if (machine_is_qsd8x50_ffa() || machine_is_qsd8x50a_ffa())
+	if (machine_is_qsd8x50_ffa())
 		platform_device_register(&keypad_device_8k_ffa);
 	else
 		platform_device_register(&keypad_device_surf);
@@ -2546,8 +2452,7 @@ static void __init qsd8x50_allocate_memory_regions(void)
 
 	size = pmem_kernel_ebi1_size;
 	if (size) {
-		addr = alloc_bootmem_aligned(size, 0x100000);
-		android_pmem_kernel_ebi1_pdata.start = __pa(addr);
+		addr = alloc_bootmem_align(size, 0x100000);
 		android_pmem_kernel_ebi1_pdata.size = size;
 		pr_info("allocating %lu bytes at %p (%lx physical) for kernel"
 			" ebi1 pmem arena\n", size, addr, __pa(addr));
@@ -2562,7 +2467,6 @@ static void __init qsd8x50_allocate_memory_regions(void)
 		size = MSM_PMEM_SMIPOOL_SIZE;
 	}
 
-	android_pmem_kernel_smi_pdata.start = MSM_PMEM_SMIPOOL_BASE;
 	android_pmem_kernel_smi_pdata.size = size;
 
 	pr_info("allocating %lu bytes at %lx (%lx physical)"
@@ -2574,7 +2478,6 @@ static void __init qsd8x50_allocate_memory_regions(void)
 	size = pmem_sf_size;
 	if (size) {
 		addr = alloc_bootmem(size);
-		android_pmem_pdata.start = __pa(addr);
 		android_pmem_pdata.size = size;
 		pr_info("allocating %lu bytes at %p (%lx physical) for sf "
 			"pmem arena\n", size, addr, __pa(addr));
@@ -2583,7 +2486,6 @@ static void __init qsd8x50_allocate_memory_regions(void)
 	size = pmem_adsp_size;
 	if (size) {
 		addr = alloc_bootmem(size);
-		android_pmem_adsp_pdata.start = __pa(addr);
 		android_pmem_adsp_pdata.size = size;
 		pr_info("allocating %lu bytes at %p (%lx physical) for adsp "
 			"pmem arena\n", size, addr, __pa(addr));
@@ -2610,13 +2512,12 @@ static void __init qsd8x50_map_io(void)
 	msm_shared_ram_phys = MSM_SHARED_RAM_PHYS;
 	msm_map_qsd8x50_io();
 	qsd8x50_allocate_memory_regions();
+	if (socinfo_init() < 0)
+		printk(KERN_ERR "%s: socinfo_init() failed!\n",
+		       __func__);
 }
 
 MACHINE_START(QSD8X50_SURF, "QCT QSD8X50 SURF")
-#ifdef CONFIG_MSM_DEBUG_UART
-	.phys_io  = MSM_DEBUG_UART_PHYS,
-	.io_pg_offst = ((MSM_DEBUG_UART_BASE) >> 18) & 0xfffc,
-#endif
 	.boot_params = PHYS_OFFSET + 0x100,
 	.map_io = qsd8x50_map_io,
 	.init_irq = qsd8x50_init_irq,
@@ -2625,34 +2526,6 @@ MACHINE_START(QSD8X50_SURF, "QCT QSD8X50 SURF")
 MACHINE_END
 
 MACHINE_START(QSD8X50_FFA, "QCT QSD8X50 FFA")
-#ifdef CONFIG_MSM_DEBUG_UART
-	.phys_io  = MSM_DEBUG_UART_PHYS,
-	.io_pg_offst = ((MSM_DEBUG_UART_BASE) >> 18) & 0xfffc,
-#endif
-	.boot_params = PHYS_OFFSET + 0x100,
-	.map_io = qsd8x50_map_io,
-	.init_irq = qsd8x50_init_irq,
-	.init_machine = qsd8x50_init,
-	.timer = &msm_timer,
-MACHINE_END
-
-MACHINE_START(QSD8X50A_SURF, "QCT QSD8X50A SURF")
-#ifdef CONFIG_MSM_DEBUG_UART
-	.phys_io  = MSM_DEBUG_UART_PHYS,
-	.io_pg_offst = ((MSM_DEBUG_UART_BASE) >> 18) & 0xfffc,
-#endif
-	.boot_params = PHYS_OFFSET + 0x100,
-	.map_io = qsd8x50_map_io,
-	.init_irq = qsd8x50_init_irq,
-	.init_machine = qsd8x50_init,
-	.timer = &msm_timer,
-MACHINE_END
-
-MACHINE_START(QSD8X50A_FFA, "QCT QSD8X50A FFA")
-#ifdef CONFIG_MSM_DEBUG_UART
-	.phys_io  = MSM_DEBUG_UART_PHYS,
-	.io_pg_offst = ((MSM_DEBUG_UART_BASE) >> 18) & 0xfffc,
-#endif
 	.boot_params = PHYS_OFFSET + 0x100,
 	.map_io = qsd8x50_map_io,
 	.init_irq = qsd8x50_init_irq,

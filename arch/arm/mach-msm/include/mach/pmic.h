@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2010, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2009-2011, Code Aurora Forum. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -31,6 +31,17 @@
 #define __ARCH_ARM_MACH_PMIC_H
 
 #include <linux/types.h>
+
+enum spkr_ldo_v_sel {
+	VOLT_LEVEL_1_1V,
+	VOLT_LEVEL_1_2V,
+	VOLT_LEVEL_2_0V,
+};
+
+enum hp_spkr_left_right {
+	LEFT_HP_SPKR,
+	RIGHT_HP_SPKR,
+};
 
 enum spkr_left_right {
 	LEFT_SPKR,
@@ -529,6 +540,104 @@ enum high_current_led {
 	HIGH_CURRENT_LED_KBD_DRV,
 };
 
+/* PMIC GPIO */
+enum pmic_gpio {
+	PMIC_GPIO_1,
+	PMIC_GPIO_2,
+	PMIC_GPIO_3,
+	PMIC_GPIO_4,
+	PMIC_GPIO_5,
+	PMIC_GPIO_6,
+	PMIC_GPIO_7,
+	PMIC_GPIO_8,
+	PMIC_GPIO_9,
+	PMIC_GPIO_10,
+	PMIC_GPIO_11,
+};
+
+enum pmic_voltage_src {
+	PMIC_GPIO_VIN0,
+	PMIC_GPIO_VIN1,
+	PMIC_GPIO_VIN2,
+	PMIC_GPIO_VIN3,
+	PMIC_GPIO_VIN4,
+	PMIC_GPIO_VIN5,
+	PMIC_GPIO_VIN6,
+	PMIC_GPIO_VIN7,
+};
+
+enum pmic_io_mode {
+	INPUT_ON,
+	INPUT_OUTPUT_ON,
+	OUTPUT_ON,
+	INPUT_OUTPUT_OFF,
+};
+
+enum pmic_current_pull_up {
+	PULL_UP_30uA,
+	PULL_UP_1_5uA,
+	PULL_UP_31_5uA,
+	PULL_UP_1_5uA_PLUS_30uA_BOOST,
+	PULL_DOWN_10uA,
+	PULL_NO_PULL,
+};
+
+enum pmic_op_buf_drv_strength {
+	BUFFER_OFF,
+	BUFFER_HIGH,
+	BUFFER_MEDIUM,
+	BUFFER_LOW,
+};
+
+enum pmic_output_buffer_config {
+	CONFIG_CMOS,
+	CONFIG_OPEN_DRAIN,
+};
+
+enum pmic_dtest_buf_onoff {
+	DTEST_DISABLE,
+	DTEST_ENABLE,
+};
+
+enum pmic_ext_pin_config {
+	EXT_PIN_ENABLE,
+	/*! Puts EXT_PIN at high Z state & disables the block */
+	EXT_PIN_DISABLE,
+};
+
+enum pmic_source_config {
+	SOURCE_GND,
+	SOURCE_PAIRED_GPIO,
+	SOURCE_SPECIAL_FUNCTION1,
+	SOURCE_SPECIAL_FUNCTION2,
+	SOURCE_DTEST1,
+	SOURCE_DTEST2,
+	SOURCE_DTEST3,
+	SOURCE_DTEST4,
+};
+
+enum pmic_direction_mode {
+	MODE_INPUT,
+	MODE_OTPUT_AND_INPUT_ON,
+	MODE_OUTPUT,
+	MODE_INPUT_AND_OUTPUT_OFF,
+};
+
+struct pm8xxx_gpio_rpc_cfg {
+	enum pmic_gpio			gpio;
+	bool				config_gpio;
+	enum pmic_voltage_src		volt_src;
+	bool				mode_on;
+	enum pmic_io_mode		mode;
+	enum pmic_output_buffer_config	buf_config;
+	bool				invert_ext_pin;
+	enum pmic_current_pull_up	src_pull;
+	enum pmic_op_buf_drv_strength	drv_strength;
+	enum pmic_dtest_buf_onoff	dtest_on;
+	enum pmic_ext_pin_config	ext_config;
+	enum pmic_source_config		src_config;
+	bool				int_polarity;
+};
 
 int pmic_lp_mode_control(enum switch_cmd cmd, enum vreg_lp_id id);
 int pmic_vreg_set_level(enum vreg_id vreg, int level);
@@ -633,4 +742,23 @@ int pmic_low_current_led_set_ext_signal(enum low_current_led led,
 int pmic_low_current_led_set_current(enum low_current_led led,
 		uint16_t milliamps);
 
+int pmic_spkr_set_vsel_ldo(enum spkr_left_right left_right,
+					enum spkr_ldo_v_sel vlt_cntrl);
+int pmic_spkr_set_boost(enum spkr_left_right left_right, uint enable);
+int pmic_spkr_bypass_en(enum spkr_left_right left_right, uint enable);
+int pmic_hp_spkr_mstr_en(enum hp_spkr_left_right left_right, uint enable);
+int pmic_hp_spkr_mute_en(enum hp_spkr_left_right left_right, uint enable);
+int pmic_hp_spkr_prm_in_en(enum hp_spkr_left_right left_right, uint enable);
+int pmic_hp_spkr_aux_in_en(enum hp_spkr_left_right left_right, uint enable);
+int pmic_hp_spkr_ctrl_prm_gain_input(enum hp_spkr_left_right left_right,
+							uint prm_gain_ctl);
+int pmic_hp_spkr_ctrl_aux_gain_input(enum hp_spkr_left_right left_right,
+							uint aux_gain_ctl);
+int pmic_xo_core_force_enable(uint enable);
+int pmic_gpio_direction_input(unsigned gpio);
+int pmic_gpio_direction_output(unsigned gpio);
+int pmic_gpio_set_value(unsigned gpio, int value);
+int pmic_gpio_get_value(unsigned gpio);
+int pmic_gpio_get_direction(unsigned gpio);
+int pmic_gpio_config(struct pm8xxx_gpio_rpc_cfg *);
 #endif

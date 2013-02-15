@@ -1,7 +1,7 @@
 /* arch/arm/mach-msm/pm.h
  *
  * Copyright (C) 2007 Google, Inc.
- * Copyright (c) 2009-2010, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2009-2011, Code Aurora Forum. All rights reserved.
  * Author: San Mehat <san@android.com>
  *
  * This software is licensed under the terms of the GNU General Public
@@ -21,7 +21,7 @@
 #include <linux/types.h>
 #include <linux/cpuidle.h>
 
-#ifdef CONFIG_HOTPLUG_CPU
+#ifdef CONFIG_SMP
 extern int pen_release;
 extern void msm_secondary_startup(void);
 #else
@@ -42,7 +42,8 @@ enum msm_pm_sleep_mode {
 #define MSM_PM_MODE(cpu, mode_nr)  ((cpu) * MSM_PM_SLEEP_MODE_NR + (mode_nr))
 
 struct msm_pm_platform_data {
-	u8 supported;
+	u8 idle_supported;   /* Allow device to enter mode during idle */
+	u8 suspend_supported; /* Allow device to enter mode during suspend */
 	u8 suspend_enabled;  /* enabled for suspend */
 	u8 idle_enabled;     /* enabled for idle low power */
 	u32 latency;         /* interrupt latency in microseconds when entering
@@ -55,8 +56,12 @@ void msm_pm_set_platform_data(struct msm_pm_platform_data *data, int count);
 int msm_pm_idle_prepare(struct cpuidle_device *dev);
 int msm_pm_idle_enter(enum msm_pm_sleep_mode sleep_mode);
 
-#ifdef CONFIG_HOTPLUG_CPU
+#ifdef CONFIG_PM
+void msm_pm_set_rpm_wakeup_irq(unsigned int irq);
 int msm_pm_platform_secondary_init(unsigned int cpu);
+#else
+static inline void msm_pm_set_rpm_wakeup_irq(unsigned int irq) {}
+static inline int msm_pm_platform_secondary_init(unsigned int cpu)
+{ return -ENOSYS; }
 #endif
-
 #endif  /* __ARCH_ARM_MACH_MSM_PM_H */

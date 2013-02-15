@@ -63,7 +63,9 @@ static int do_commit(struct ubifs_info *c)
 	struct ubifs_lp_stats lst;
 
 	dbg_cmt("start");
-	if (c->ro_media) {
+	ubifs_assert(!c->ro_media && !c->ro_mount);
+
+	if (c->ro_error) {
 		err = -EROFS;
 		goto out_up;
 	}
@@ -519,7 +521,7 @@ int dbg_check_old_index(struct ubifs_info *c, struct ubifs_zbranch *zroot)
 	size_t sz;
 
 	if (!(ubifs_chk_flags & UBIFS_CHK_OLD_IDX))
-		goto out;
+		return 0;
 
 	INIT_LIST_HEAD(&list);
 

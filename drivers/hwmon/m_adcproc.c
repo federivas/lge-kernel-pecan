@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -8,16 +8,11 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
  */
 
 #include <linux/kernel.h>
 
-#include <linux/m_adc.h>
+#include <linux/msm_adc.h>
 
 #define KELVINMIL_DEGMIL	273160
 
@@ -459,7 +454,7 @@ int32_t scale_xtern_chgr_cur(int32_t adc_code,
 		if (rawfromoffset >= 1 << adc_properties->bitresolution)
 			rawfromoffset = (1 << adc_properties->bitresolution)
 									- 1;
-		adc_chan_result->measurement = ((int64_t)rawfromoffset << 1)*
+		adc_chan_result->measurement = ((int64_t)rawfromoffset * 5)*
 						chan_properties->adc_graph->dx*
 					chan_properties->gain_denominator;
 		do_div(adc_chan_result->measurement,

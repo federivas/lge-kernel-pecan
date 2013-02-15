@@ -19,7 +19,6 @@ static void blkdev_discard_end_io(struct bio *bio, int err)
 
 	if (bio->bi_private)
 		complete(bio->bi_private);
-	__free_page(bio_page(bio));
 
 	bio_put(bio);
 }
@@ -40,10 +39,9 @@ int blkdev_issue_discard(struct block_device *bdev, sector_t sector,
 {
 	DECLARE_COMPLETION_ONSTACK(wait);
 	struct request_queue *q = bdev_get_queue(bdev);
-	int type = flags & BLKDEV_IFL_BARRIER ?
-		DISCARD_BARRIER : DISCARD_NOBARRIER;
+	int type = REQ_WRITE | REQ_DISCARD;
+	unsigned int max_discard_sectors;
 	struct bio *bio;
-	struct page *page;
 	int ret = 0;
 
 	if (!q)
@@ -52,36 +50,35 @@ int blkdev_issue_discard(struct block_device *bdev, sector_t sector,
 	if (!blk_queue_discard(q))
 		return -EOPNOTSUPP;
 
-	while (nr_sects && !ret) {
-		unsigned int sector_size = q->limits.logical_block_size;
-		unsigned int max_discard_sectors =
-			min(q->limits.max_discard_sectors, UINT_MAX >> 9);
+	/*
+	 * Ensure that max_discard_sectors is of the proper
+	 * granularity
+	 */
+	max_discard_sectors = min(q->limits.max_discard_sectors, UINT_MAX >> 9);
+	if (q->limits.discard_granularity) {
+		unsigned int disc_sects = q->limits.discard_granularity >> 9;
 
+		max_discard_sectors &= ~(disc_sects - 1);
+	}
+
+	if (flags & BLKDEV_DISCARD_SECURE) {
+		if (!blk_queue_secdiscard(q))
+			return -EOPNOTSUPP;
+		type |= REQ_SECURE;
+	}
+
+	while (nr_sects && !ret) {
 		bio = bio_alloc(gfp_mask, 1);
-		if (!bio)
-			goto out;
+		if (!bio) {
+			ret = -ENOMEM;
+			break;
+		}
+
 		bio->bi_sector = sector;
 		bio->bi_end_io = blkdev_discard_end_io;
 		bio->bi_bdev = bdev;
-		if (flags & BLKDEV_IFL_WAIT)
-			bio->bi_private = &wait;
+		bio->bi_private = &wait;
 
-		/*
-		 * Add a zeroed one-sector payload as that's what
-		 * our current implementations need.  If we'll ever need
-		 * more the interface will need revisiting.
-		 */
-		page = alloc_page(gfp_mask | __GFP_ZERO);
-		if (!page)
-			goto out_free_bio;
-		if (bio_add_pc_page(q, bio, page, sector_size, 0) < sector_size)
-			goto out_free_page;
-
-		/*
-		 * And override the bio size - the way discard works we
-		 * touch many more blocks on disk than the actual payload
-		 * length.
-		 */
 		if (nr_sects > max_discard_sectors) {
 			bio->bi_size = max_discard_sectors << 9;
 			nr_sects -= max_discard_sectors;
@@ -94,8 +91,7 @@ int blkdev_issue_discard(struct block_device *bdev, sector_t sector,
 		bio_get(bio);
 		submit_bio(type, bio);
 
-		if (flags & BLKDEV_IFL_WAIT)
-			wait_for_completion(&wait);
+		wait_for_completion(&wait);
 
 		if (bio_flagged(bio, BIO_EOPNOTSUPP))
 			ret = -EOPNOTSUPP;
@@ -103,13 +99,8 @@ int blkdev_issue_discard(struct block_device *bdev, sector_t sector,
 			ret = -EIO;
 		bio_put(bio);
 	}
+
 	return ret;
-out_free_page:
-	__free_page(page);
-out_free_bio:
-	bio_put(bio);
-out:
-	return -ENOMEM;
 }
 EXPORT_SYMBOL(blkdev_issue_discard);
 
@@ -118,7 +109,6 @@ struct bio_batch
 	atomic_t 		done;
 	unsigned long 		flags;
 	struct completion 	*wait;
-	bio_end_io_t		*end_io;
 };
 
 static void bio_batch_end_io(struct bio *bio, int err)
@@ -131,22 +121,18 @@ static void bio_batch_end_io(struct bio *bio, int err)
 		else
 			clear_bit(BIO_UPTODATE, &bb->flags);
 	}
-	if (bb) {
-		if (bb->end_io)
-			bb->end_io(bio, err);
-		atomic_inc(&bb->done);
-		complete(bb->wait);
-	}
+	if (bb)
+		if (atomic_dec_and_test(&bb->done))
+			complete(bb->wait);
 	bio_put(bio);
 }
 
 /**
- * blkdev_issue_zeroout generate number of zero filed write bios
+ * blkdev_issue_zeroout - generate number of zero filed write bios
  * @bdev:	blockdev to issue
  * @sector:	start sector
  * @nr_sects:	number of sectors to write
  * @gfp_mask:	memory allocation flags (for bio_alloc)
- * @flags:	BLKDEV_IFL_* flags to control behaviour
  *
  * Description:
  *  Generate and issue number of bios with zerofiled pages.
@@ -155,37 +141,32 @@ static void bio_batch_end_io(struct bio *bio, int err)
  */
 
 int blkdev_issue_zeroout(struct block_device *bdev, sector_t sector,
-			sector_t nr_sects, gfp_t gfp_mask, unsigned long flags)
+			sector_t nr_sects, gfp_t gfp_mask)
 {
-	int ret = 0;
+	int ret;
 	struct bio *bio;
 	struct bio_batch bb;
-	unsigned int sz, issued = 0;
+	unsigned int sz;
 	DECLARE_COMPLETION_ONSTACK(wait);
 
-	atomic_set(&bb.done, 0);
+	atomic_set(&bb.done, 1);
 	bb.flags = 1 << BIO_UPTODATE;
 	bb.wait = &wait;
-	bb.end_io = NULL;
 
-	if (flags & BLKDEV_IFL_BARRIER) {
-		/* issue async barrier before the data */
-		ret = blkdev_issue_flush(bdev, gfp_mask, NULL, 0);
-		if (ret)
-			return ret;
-	}
 submit:
+	ret = 0;
 	while (nr_sects != 0) {
 		bio = bio_alloc(gfp_mask,
 				min(nr_sects, (sector_t)BIO_MAX_PAGES));
-		if (!bio)
+		if (!bio) {
+			ret = -ENOMEM;
 			break;
+		}
 
 		bio->bi_sector = sector;
 		bio->bi_bdev   = bdev;
 		bio->bi_end_io = bio_batch_end_io;
-		if (flags & BLKDEV_IFL_WAIT)
-			bio->bi_private = &bb;
+		bio->bi_private = &bb;
 
 		while (nr_sects != 0) {
 			sz = min((sector_t) PAGE_SIZE >> 9 , nr_sects);
@@ -198,21 +179,14 @@ submit:
 			if (ret < (sz << 9))
 				break;
 		}
-		issued++;
+		ret = 0;
+		atomic_inc(&bb.done);
 		submit_bio(WRITE, bio);
 	}
-	/*
-	 * When all data bios are in flight. Send final barrier if requeted.
-	 */
-	if (nr_sects == 0 && flags & BLKDEV_IFL_BARRIER)
-		ret = blkdev_issue_flush(bdev, gfp_mask, NULL,
-					flags & BLKDEV_IFL_WAIT);
 
-
-	if (flags & BLKDEV_IFL_WAIT)
-		/* Wait for bios in-flight */
-		while ( issued != atomic_read(&bb.done))
-			wait_for_completion(&wait);
+	/* Wait for bios in-flight */
+	if (!atomic_dec_and_test(&bb.done))
+		wait_for_completion(&wait);
 
 	if (!test_bit(BIO_UPTODATE, &bb.flags))
 		/* One of bios in the batch was completed with error.*/

@@ -33,7 +33,9 @@
 #include <mach/msm_iomap.h>
 
 #include <mach/board.h>
+#ifdef CONFIG_MSM_SMD
 #include "smd_private.h"
+#endif
 
 /* configuration tags specific to msm */
 
@@ -46,13 +48,7 @@ struct msm_ptbl_entry {
 	__u32 flags;
 };
 
-#ifdef CONFIG_MACH_LGE
-//[LGE_UPDATE_S] DMS_SYSTEM hyunwook.choo 2011-06-09
-#define MSM_MAX_PARTITIONS 12
-//[LGE_UPDATE_E] DMS_SYSTEM hyunwook.choo 
-#else /* original */
-#define MSM_MAX_PARTITIONS 10
-#endif
+#define MSM_MAX_PARTITIONS 8
 
 static struct mtd_partition msm_nand_partitions[MSM_MAX_PARTITIONS];
 static char msm_nand_names[MSM_MAX_PARTITIONS * 16];
@@ -120,6 +116,7 @@ struct flash_partition_table {
 	struct flash_partition_entry part_entry[16];
 };
 
+#ifdef CONFIG_MSM_SMD
 static int get_nand_partitions(void)
 {
 	struct flash_partition_table *partition_table;
@@ -189,5 +186,17 @@ static int get_nand_partitions(void)
 
 	return -ENODEV;
 }
+#else
+static int get_nand_partitions(void)
+{
+
+	if (msm_nand_data.nr_parts)
+		return 0;
+
+	printk(KERN_WARNING "%s: no partition table found!", __func__);
+
+	return -ENODEV;
+}
+#endif
 
 device_initcall(get_nand_partitions);

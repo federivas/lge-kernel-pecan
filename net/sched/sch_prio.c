@@ -28,6 +28,7 @@ struct prio_sched_data
 	struct tcf_proto *filter_list;
 	u8  prio2band[TC_PRIO_MAX+1];
 	struct Qdisc *queues[TCQ_PRIO_BANDS];
+	u8 enable_flow;
 };
 
 
@@ -84,8 +85,6 @@ prio_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 
 	ret = qdisc_enqueue(skb, qdisc);
 	if (ret == NET_XMIT_SUCCESS) {
-		sch->bstats.bytes += qdisc_pkt_len(skb);
-		sch->bstats.packets++;
 		sch->q.qlen++;
 		return NET_XMIT_SUCCESS;
 	}
@@ -98,6 +97,9 @@ static struct sk_buff *prio_peek(struct Qdisc *sch)
 {
 	struct prio_sched_data *q = qdisc_priv(sch);
 	int prio;
+
+	if (!q->enable_flow)
+		return NULL;
 
 	for (prio = 0; prio < q->bands; prio++) {
 		struct Qdisc *qdisc = q->queues[prio];
@@ -113,10 +115,14 @@ static struct sk_buff *prio_dequeue(struct Qdisc* sch)
 	struct prio_sched_data *q = qdisc_priv(sch);
 	int prio;
 
+	if (!q->enable_flow)
+		return NULL;
+
 	for (prio = 0; prio < q->bands; prio++) {
 		struct Qdisc *qdisc = q->queues[prio];
 		struct sk_buff *skb = qdisc->dequeue(qdisc);
 		if (skb) {
+			qdisc_bstats_update(sch, skb);
 			sch->q.qlen--;
 			return skb;
 		}
@@ -152,6 +158,7 @@ prio_reset(struct Qdisc* sch)
 	for (prio=0; prio<q->bands; prio++)
 		qdisc_reset(q->queues[prio]);
 	sch->q.qlen = 0;
+	q->enable_flow = 1;
 }
 
 static void
@@ -184,6 +191,7 @@ static int prio_tune(struct Qdisc *sch, struct nlattr *opt)
 	}
 
 	sch_tree_lock(sch);
+	q->enable_flow = qopt->enable_flow;
 	q->bands = qopt->bands;
 	memcpy(q->prio2band, qopt->priomap, TC_PRIO_MAX+1);
 
@@ -200,7 +208,7 @@ static int prio_tune(struct Qdisc *sch, struct nlattr *opt)
 	for (i=0; i<q->bands; i++) {
 		if (q->queues[i] == &noop_qdisc) {
 			struct Qdisc *child, *old;
-			child = qdisc_create_dflt(qdisc_dev(sch), sch->dev_queue,
+			child = qdisc_create_dflt(sch->dev_queue,
 						  &pfifo_qdisc_ops,
 						  TC_H_MAKE(sch->handle, i + 1));
 			if (child) {
@@ -246,6 +254,7 @@ static int prio_dump(struct Qdisc *sch, struct sk_buff *skb)
 	struct tc_prio_qopt opt;
 
 	opt.bands = q->bands;
+	opt.enable_flow = q->enable_flow;
 	memcpy(&opt.priomap, q->prio2band, TC_PRIO_MAX+1);
 
 	NLA_PUT(skb, TCA_OPTIONS, sizeof(opt), &opt);
